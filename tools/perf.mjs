@@ -8,7 +8,7 @@ const query = process.argv[4] ?? '';
 const browser = await chromium.launch({ channel: 'chrome', headless: false, args: [`--window-position=${wx},${wy}`, '--window-size=760,640'] });
 const context = await browser.newContext({ viewport: null });
 const page = await context.newPage();
-await page.goto((process.env.TIDAL_URL ?? 'http://localhost:5174/') + query);
+await page.goto((process.env.TIDAL_URL ?? 'http://localhost:5174/') + (query || '?nokeys'));
 await page.waitForFunction(() => window.tidal?.stats.particles > 0, null, { timeout: 20000 });
 const pages = [page];
 for (let i = 0; i < 2; i++) {

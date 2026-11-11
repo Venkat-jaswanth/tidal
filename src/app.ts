@@ -47,6 +47,13 @@ async function main(): Promise<void> {
 
   const canvas = document.querySelector<HTMLCanvasElement>('#tank')!;
   const query = new URLSearchParams(location.search);
+  // `?nokeys`: ignore the keyboard entirely. Capture and measurement tools use it, because a headed
+  // window can take focus and receive whatever is being typed elsewhere.
+  if (query.has('nokeys')) {
+    for (const type of ['keydown', 'keyup', 'keypress'] as const) {
+      addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
+    }
+  }
   const pocket = isPocket(window);
   const dark = matchMedia('(prefers-color-scheme: dark)').matches;
   const engine = new Engine({
@@ -97,7 +104,7 @@ async function main(): Promise<void> {
     const spot = spanning ? nextSpanSpot(anchor, VESSEL_SIZE, spanUsed++) : null;
     const left = spot ? spot.left : window.screenX + window.outerWidth + n * 24;
     const top = spot ? spot.top : window.screenY + n * 24;
-    const w = window.open(location.href.split('?')[0], `tidal-vessel-${Date.now()}-${n}`, `popup,width=${VESSEL_SIZE.w},height=${VESSEL_SIZE.h},left=${left},top=${top}`);
+    const w = window.open(location.href.split('?')[0] + (query.has('nokeys') ? '?nokeys' : ''), `tidal-vessel-${Date.now()}-${n}`, `popup,width=${VESSEL_SIZE.w},height=${VESSEL_SIZE.h},left=${left},top=${top}`);
     if (w) vessels.push(w);
     return w;
   };

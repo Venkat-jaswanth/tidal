@@ -8,7 +8,7 @@ const browser = await chromium.launch({ channel: 'chrome', headless: false, args
 async function open() {
   const context = await browser.newContext({ viewport: { width: 900, height: 650 }, deviceScaleFactor: 2, colorScheme: scheme });
   const page = await context.newPage();
-  await page.goto(url);
+  await page.goto(url + '?nokeys');
   await page.waitForFunction(() => window.tidal?.stats.particles > 0, null, { timeout: 20000 });
   return { context, page };
 }
@@ -21,6 +21,11 @@ const liquid = (page, id) => page.evaluate((id) => window.tidal.command({ type: 
   await page.screenshot({ path: `${out}/${scheme}-rest.png` });
   for (let i = 0; i < 7; i++) { await kick(page, 1, -0.15); await page.waitForTimeout(100); }
   for (let i = 0; i < 8; i++) { await page.waitForTimeout(150); await page.screenshot({ path: `${out}/${scheme}-slosh-${i}.png` }); }
+  await context.close();
+}
+{ // the entrance: a new world pours in from the top while the readout counts up
+  const { context, page } = await open();
+  for (let i = 0; i < 6; i++) { await page.waitForTimeout(260); await page.screenshot({ path: `${out}/${scheme}-pour-${i}.png` }); }
   await context.close();
 }
 if (scheme === 'light') {
