@@ -5,30 +5,29 @@
  * Metrics used below (B612 / B612 Mono, per em): ascent 0.96, descent 0.25, cap height 0.76,
  * mono advance 0.65. With line-height L and size S the baseline sits at (L - 1.21 S) / 2 + 0.96 S.
  *
- * Nothing here has a background. The text is printed on the glass and kept legible over paper and over
- * any liquid by a knock-out: a tight halo of the theme's paper colour, built from text shadows centred on
- * the glyphs. The first, unblurred layer sits exactly under each glyph, so text drawn at partial strength
- * always mixes with paper, never with whatever liquid is behind it.
+ * Nothing here has a background. Text is printed on the glass. In the air it keeps a hard knock-out: eight
+ * unblurred copies of each glyph in paper, 1 px out (0.7 px on the diagonals), plus one exactly under it, so
+ * text drawn at partial strength always mixes with paper, never with the liquid behind it. Never a blur.
+ * Behind each block of text the canvas also fades its ruling (chrome.ts tells it where). Under a dark liquid
+ * the knock-out would only draw a dark rim, so that text turns paper-coloured instead (data-under).
  */
 
 .tc {
-  /* text strengths: actions and the readout; settings and secondary facts; a quiet qualifier inside a setting */
+  /* text strengths: actions, values and labels; keys, secondary facts */
   --tc-ink-1: var(--ink);
   --tc-ink-2: color-mix(in srgb, var(--ink) 72%, transparent);
-  /* about 2 px of solid paper around each stroke, fading out by 3 px: tight enough to read as print, not glow */
-  --tc-halo:
+  /* the big number is a step softer than the ink so it does not pull the eye from the water */
+  --tc-readout: #3b3f45;
+  --tc-knock:
     0 0 0 var(--paper),
-    0 0 1px var(--paper),
-    0 0 1.5px var(--paper),
-    0 0 2px var(--paper),
-    0 0 3px color-mix(in srgb, var(--paper) 60%, transparent);
-  /* the same knock-out scaled for the 56 px readout, whose strokes are five times as thick */
-  --tc-halo-lg:
-    0 0 0 var(--paper),
-    0 0 1px var(--paper),
-    0 0 2px var(--paper),
-    0 0 3px var(--paper),
-    0 0 5px color-mix(in srgb, var(--paper) 60%, transparent);
+    1px 0 0 var(--paper),
+    -1px 0 0 var(--paper),
+    0 1px 0 var(--paper),
+    0 -1px 0 var(--paper),
+    0.7px 0.7px 0 var(--paper),
+    -0.7px 0.7px 0 var(--paper),
+    0.7px -0.7px 0 var(--paper),
+    -0.7px -0.7px 0 var(--paper);
   position: fixed;
   inset: 0;
   z-index: 1;
@@ -37,13 +36,17 @@
   font: 400 10px/13px 'B612', ui-sans-serif, sans-serif;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  text-shadow: var(--tc-halo);
+  text-shadow: var(--tc-knock);
   font-kerning: normal;
   font-synthesis: none;
   -webkit-user-select: none;
   user-select: none;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+
+.tc[data-dark] {
+  --tc-readout: color-mix(in srgb, var(--ink) 88%, transparent);
 }
 
 /* Numbers set inside label lines: B612 Mono, tracked only a little so they read as one figure. */
@@ -82,16 +85,25 @@
   color: var(--tc-ink-2);
 }
 
+/*
+ * Even rhythm, 9 px either side of the number. Label 11/14: baseline 10.905. Readout 48/48: baseline 41.04,
+ * cap top 41.04 - 36.48 = 4.56. Specimen 11/14: cap top 10.905 - 8.36 = 2.545.
+ *   label baseline to readout cap top: 14 + m + 4.56 - 10.905 = 9  ->  m = 1.345
+ *   readout baseline to specimen cap top: (48 - 41.04) + n + 2.545 = 9  ->  n = -0.505
+ * Measured at 2x, baselines snap and the zeros overshoot, which left 9.5 above and 8 below; the readout
+ * moves up half a pixel and the specimen line down half a pixel to even the ink, not the arithmetic.
+ */
 .tc-readout {
   display: flex;
   align-items: baseline;
+  margin-top: 0.845px;
+  color: var(--tc-readout);
   white-space: nowrap;
 }
 
 .tc-num {
-  font: 400 56px/56px 'B612 Mono', ui-monospace, monospace;
+  font: 400 48px/48px 'B612 Mono', ui-monospace, monospace;
   letter-spacing: 0;
-  text-shadow: var(--tc-halo-lg);
 }
 
 .tc-unit {
@@ -100,15 +112,17 @@
 }
 
 .tc-spec {
-  margin-top: 2px;
   font-size: 11px;
   line-height: 14px;
   color: var(--tc-ink-2);
   white-space: nowrap;
 }
 
+.tc-spec-main {
+  margin-top: 0.495px;
+}
+
 .tc-rain {
-  margin-top: 0;
   transition: opacity 200ms linear;
 }
 
@@ -125,6 +139,8 @@
   overflow: hidden;
 }
 
+/* Each numeral's baseline sits 2 px above its tick (chrome.ts places them), so a surface resting on a
+   graduation never cuts through its figure. */
 .tc-tick {
   position: absolute;
   left: 24px;
@@ -132,6 +148,12 @@
   letter-spacing: 0;
   color: color-mix(in srgb, var(--ink) 70%, transparent);
   white-space: nowrap;
+}
+
+/* the scale's unit, once, above the topmost numeral, at a numeral's strength so it stays readable */
+.tc-tick-unit {
+  letter-spacing: 0.04em;
+  text-transform: none;
 }
 
 /* ---------------------------------------------------------------- controls and help, top right */
@@ -165,17 +187,9 @@
   display: none;
 }
 
-.tc-row-2 {
+/* Settings are written KEY value: the key a step quieter (5.2:1 on paper), the value full ink. */
+.tc-lead {
   color: var(--tc-ink-2);
-}
-
-/* the name of a setting is quiet (still 5:1 on paper); its value is full ink */
-.tc-lead-quiet {
-  color: var(--tc-ink-2);
-}
-
-.tc-row-2 .tc-lead-quiet + .tc-value {
-  color: var(--tc-ink-1);
 }
 
 .tc-btn {
@@ -189,7 +203,7 @@
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  /* form controls reset text-shadow; the halo must reach the buttons too */
+  /* form controls reset text-shadow; the knock-out must reach the buttons too */
   text-shadow: inherit;
   white-space: nowrap;
   cursor: pointer;
@@ -217,7 +231,8 @@
   inset: -5px -11px;
 }
 
-/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line), with its own halo. */
+/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line), knocked out like the
+   text: a hard 1 px of paper either side, no blur. */
 .tc-btn::after {
   content: '';
   position: absolute;
@@ -226,7 +241,7 @@
   top: 14px;
   height: 1px;
   background: currentColor;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper) 70%, transparent);
+  box-shadow: 0 0 0 1px var(--paper);
   opacity: 0;
   transition: opacity 140ms linear;
 }
@@ -295,6 +310,32 @@
   white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------- under a deep-coloured liquid (light theme only) */
+
+/* No knock-out under the liquid: printed straight on the glass in whichever of paper or ink reads against it. */
+.tc-tick[data-under],
+.tc-credit[data-under] {
+  text-shadow: none;
+}
+
+.tc-tick[data-under='paper'],
+.tc-credit[data-under='paper'] {
+  color: var(--paper);
+}
+
+.tc-tick[data-under='ink'],
+.tc-credit[data-under='ink'] {
+  color: var(--ink);
+}
+
+.tc-tick-unit[data-under='paper'] {
+  color: color-mix(in srgb, var(--paper) 60%, transparent);
+}
+
+.tc-tick-unit[data-under='ink'] {
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+}
+
 /* ---------------------------------------------------------------- compact: picture-in-picture, small windows */
 
 .tc[data-compact] .tc-stack {
@@ -318,10 +359,13 @@
   color: var(--tc-ink-1);
 }
 
+.tc[data-compact] .tc-readout {
+  margin-top: 0;
+}
+
 .tc[data-compact] .tc-num {
   font-size: 28px;
   line-height: 28px;
-  text-shadow: var(--tc-halo);
 }
 
 .tc[data-compact] .tc-unit {

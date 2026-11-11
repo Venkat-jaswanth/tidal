@@ -5,7 +5,7 @@ import { loadWorld, saveWorld } from './net/persist';
 import { decodeSnapshot, encodeSnapshot } from './net/snapshot';
 import { Transport, type CropHeader, type FrameMeta, type Snapshot } from './net/transport';
 import { WATER_LOOK, type LiquidLook, type Theme } from './render/theme';
-import { WaterRenderer, columnHeight, type Column, type ViewState } from './render/water';
+import { WaterRenderer, columnHeight, type Column, type QuietZone, type ViewState } from './render/water';
 import { CropPacker, warmCropPipeline, type Crop } from './sim/crop';
 import type { Vessel } from './sim/domain';
 import { MpmSim, WATER, fillBlock, warmSimPipelines, type Liquid } from './sim/mpm';
@@ -13,9 +13,9 @@ import { Leadership } from './world/leader';
 import { Calibrator, Registry, claimSlot, clock, type VesselInfo } from './world/registry';
 
 export const CELL_PX = 6;
-// 600 substeps a second with a squared sound speed of 0.5 is as stiff, in physical units, as 720 at 0.35,
-// for a sixth less GPU time. 540 at 0.62 breaks up into foam, so this is close to the limit.
-export const SUBSTEP_HZ = 600;
+// 480 substeps a second: 8 per frame at 60 Hz. Fewer is stable too (tested down to 360) but the
+// liquid then compresses visibly more under its own weight.
+export const SUBSTEP_HZ = 480;
 export const PARTICLES = 100_000;
 export const WORLD_ML = 1000;
 const LOW_PARTICLES = 50_000;
@@ -30,6 +30,7 @@ const SNAPSHOT_MS = 100;
 const PERSIST_MS = 2000;
 // Measured on the real solver: resting energy is about 3e-5, and a hard slosh slaps the glass at about 1.4e-3 raw.
 const ENERGY_FLOOR = 6e-5;
+const REST_ENERGY = 3e-4;
 const IMPACT_GAIN = 4;
 const STALL_MS = 700;         // a visible follower takes over after this long without a frame from the leader
 const SNAPSHOT_BROADCAST_MS = 500;
@@ -205,6 +206,15 @@ export class Engine {
   get id(): string { return this.registry.self.id; }
   get slot(): number { return this.registry.self.slot; }
   get isLeader(): boolean { return this.leadership.isLeader; }
+
+  /**
+   * Rectangles (CSS px in the vessel's viewport) where text sits. The paper's ruling fades out
+   * softly behind them, so a grid line never strikes through a label. At most four per vessel.
+   */
+  setQuietZones(zones: readonly QuietZone[], slot = this.registry.self.slot): void {
+    this.quietZones.set(slot, zones.slice(0, 4));
+  }
+  private readonly quietZones = new Map<number, QuietZone[]>();
 
   /** How the current liquid compresses under its own weight: see `columnHeight`. */
   get column(): Column {
@@ -391,7 +401,21 @@ export class Engine {
       const s = this.registry.self;
       const n = this.particleCount;
       const rho0 = (REST_DENSITY_SCALE * n * CELL_PX * CELL_PX) / (WORLD_ML * PX2_PER_ML);
-      sim.setParticles(fillBlock(n, rho0, this.cellRect(s), [0, 0, 0], s.slot), n, rho0);
+      const block = fillBlock(n, rho0, this.cellRect(s), [0, 0, 0], s.slot);
+      // A new world pours in from the top of the first vessel, and the readout counts up with it.
+      // With reduced motion it is simply there.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const r = this.cellRect(s);
+        const f = new Float32Array(block);
+        for (let i = 0; i < n; i++) {
+          const o = i * 16;
+          f[o] = r.x0 + 2.5 + Math.random() * (r.x1 - r.x0 - 5);
+          f[o + 1] = r.y0 + 1.6 + Math.random() * 2;
+          f[o + 2] = 0; f[o + 3] = 0.05;
+          f[o + 11] = 0.05 + Math.random() * 1.5;
+        }
+      }
+      sim.setParticles(block, n, rho0);
     }
     this.stats.leader = true;
   }
@@ -456,6 +480,13 @@ export class Engine {
       this.impulse[2]--;
     }
     if (this.calm) physics.damping = Math.min(physics.damping, 0.9982);
+    // once the liquid has all but stopped, damp what is left so the surface comes to a true rest
+    const stats = sim.stats;
+    if (stats) {
+      let moving = 0;
+      for (const e of stats.energy) moving += e;
+      if (moving < REST_ENERGY) physics.damping = Math.min(physics.damping, 0.996);
+    }
     sim.liquid = physics;
     sim.dye = this.liquid.id === 'ink';
     if (sim.dye && this.simLiquid !== 'ink') sim.recolor();
@@ -678,7 +709,7 @@ export class Engine {
     const state: ViewState = {
       originX: info.x, originY: info.y, width: w, height: h, dpr, time: now / 1000,
       cropX, cropY, cellPx: CELL_PX, px2PerMl: PX2_PER_ML,
-      gravityX: m?.gravityX ?? 0, gravityY: m?.gravityY ?? 1, tier: this.tier, column: this.column,
+      gravityX: m?.gravityX ?? 0, gravityY: m?.gravityY ?? 1, tier: this.tier, column: this.column, quiet: this.quietZones.get(info.slot) ?? [],
     };
     const look = this.liquid.id === 'water' ? { ...this.liquid.look, ...this.theme.liquid } : this.liquid.look;
     view.renderer.draw(encoder, view.ctx.getCurrentTexture().createView(), field, state, this.theme, look);

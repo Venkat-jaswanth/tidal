@@ -71,10 +71,13 @@ test.describe('flow between vessels', () => {
     expect(Math.abs(dA), 'A change across a 60 px gap').toBeLessThan(3);
     expect(Math.abs(dB), 'B change across a 60 px gap').toBeLessThan(3);
 
-    // ---- (c) close it to 12 px: B's floor is 80 px lower, so water runs from A into B
-    const row12 = await place(w, { gapMainA: 100, gapAB: 12, bDrop: 80 });
-    console.log('(c) gap', row12.b.x - (row12.a.x + row12.a.w), 'px');
+    // ---- (c) lift B level with A while still 60 px apart (B now holds more at the same floor height),
+    // then close the gap to 12 px: water runs from B into A through the coupling gap
+    await place(w, { gapMainA: 100, gapAB: 60, bDrop: 0 });
+    await w.main.waitForTimeout(2500);
     const c0 = { a: await mlOf(w.popups[0]!), b: await mlOf(w.popups[1]!) };
+    const row12 = await place(w, { gapMainA: 100, gapAB: 12, bDrop: 0 });
+    console.log('(c) gap', row12.b.x - (row12.a.x + row12.a.w), 'px');
     const c = await sampleVolumes(w, 5);
     const cl = c[c.length - 1]!;
     console.log(`(c) 12 px gap: A ${fmt(c0.a)} -> ${fmt(cl.a)}, B ${fmt(c0.b)} -> ${fmt(cl.b)}`);

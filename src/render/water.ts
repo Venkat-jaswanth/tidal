@@ -22,9 +22,13 @@ export interface ViewState {
   /** Quality tier, 0 (everything) to 5: see `Engine.tier`. */
   tier: number;
   column: Column;
+  quiet: readonly QuietZone[];
 }
 
-const UNIFORM_FLOATS = 68;
+const UNIFORM_FLOATS = 84;
+
+/** A rectangle of the viewport, in CSS px, where text sits. */
+export interface QuietZone { x: number; y: number; w: number; h: number }
 
 /**
  * The liquid is weakly compressible: under its own weight its density at depth d (px) below the
@@ -105,6 +109,10 @@ export class WaterRenderer {
     v4(10, rgb(look.inkB ?? look.tint), look.inkB ? 1 : 0);
     d[59] = look.inkB ? 1 : (look.metal ?? 0) > 0 ? -(look.metal ?? 0) : 0; // > 0: two inks; < 0: metal amount
     // quality ladder, rungs 3 to 5: cheaper refraction, then no caustics, then no foam
+    for (let i = 0; i < 4; i++) {
+      const z = view.quiet[i];
+      d.set(z ? [z.x, z.y, z.x + z.w, z.y + z.h] : [0, 0, 0, 0], 68 + i * 4);
+    }
     d[64] = view.column.a; d[65] = view.column.gamma; d[66] = COLUMN_FILL; d[67] = 0;
     d[60] = view.tier >= 3 ? 0 : 1; d[61] = view.tier >= 4 ? 0 : 1; d[62] = view.tier >= 5 ? 0 : 1; d[63] = 0;
     this.device.queue.writeBuffer(this.uniforms, 0, d);

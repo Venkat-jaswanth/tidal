@@ -4,7 +4,7 @@ import type { SimRect } from './domain';
 import { DomainPlan, type DomainOptions, type Vessel } from './domain';
 import {
   CELL_STRIDE, MAX_RECTS, PARTICLE_BYTES,
-  carryWGSL, clearWGSL, g2pWGSL, gridWGSL, p2gDyeWGSL, p2gWGSL, recolorWGSL,
+  carryWGSL, g2pWGSL, gridWGSL, p2gDyeWGSL, p2gWGSL, recolorWGSL,
 } from './shaders';
 
 export const MAX_SUBSTEPS = 48;
@@ -39,9 +39,10 @@ export interface Liquid {
 
 export const WATER: Liquid = {
   gravityX: 0, gravityY: 3200,
-  // An exponent of 5 stiffens so fast under load that a deep column (about 600 px) goes unstable and
-  // boils into holes. 3 stays stable there and under a 13 000 px/s fling.
-  soundSpeed2: 0.5, eosPower: 3,
+  // A linear equation of state (exponent 1): the sound speed does not rise with pressure, so a deep
+  // column is as stable as a shallow one. Exponents of 3 and 5 stiffen under load and boil a deep
+  // column into holes once the substep is long enough.
+  soundSpeed2: 0.7, eosPower: 1,
   viscosity: 0.08, cohesion: 0, wallFriction: 0,
   damping: 0.999, dyeMix: 0,
 };
@@ -61,11 +62,11 @@ export interface SimStats {
   gpuMs: number | null;
 }
 
-type Pipes = Record<'clear' | 'carry' | 'recolor' | 'p2g' | 'p2gDye' | 'grid' | 'g2p', GPUComputePipeline>;
+type Pipes = Record<'carry' | 'recolor' | 'p2g' | 'p2gDye' | 'grid' | 'g2p', GPUComputePipeline>;
 const pipelineCache = new WeakMap<GPUDevice, { layout: GPUBindGroupLayout; pipes: Pipes }>();
 
 const SHADERS: Record<keyof Pipes, string> = {
-  clear: clearWGSL, carry: carryWGSL, recolor: recolorWGSL, p2g: p2gWGSL, p2gDye: p2gDyeWGSL, grid: gridWGSL, g2p: g2pWGSL,
+  carry: carryWGSL, recolor: recolorWGSL, p2g: p2gWGSL, p2gDye: p2gDyeWGSL, grid: gridWGSL, g2p: g2pWGSL,
 };
 
 function simLayout(device: GPUDevice): { layout: GPUBindGroupLayout; pipelineLayout: GPUPipelineLayout } {
@@ -262,7 +263,6 @@ export class MpmSim {
     for (let s = 0; s < nSub; s++) {
       write(s, plan.rectsAt(s), false);
       pass.setBindGroup(0, this.bindGroups[s]!);
-      pass.setPipeline(this.pipes.clear); pass.dispatchWorkgroups(gx, gy);
       pass.setPipeline(this.dye ? this.pipes.p2gDye : this.pipes.p2g); pass.dispatchWorkgroups(pGroups);
       pass.setPipeline(this.pipes.grid); pass.dispatchWorkgroups(gx, gy);
       pass.setPipeline(this.pipes.g2p); pass.dispatchWorkgroups(pGroups);

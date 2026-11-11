@@ -2,7 +2,7 @@
 // Units: lengths in grid cells, time in substeps (dt = 1), so velocities are cells per substep.
 
 export const MAX_RECTS = 24;
-export const CELL_STRIDE = 8; // i32 per cell: momentum x, momentum y, mass, dye r, dye g, dye b, unused, unused
+export const CELL_STRIDE = 4; // i32 per cell: momentum x, momentum y, mass, dye
 export const PARTICLE_BYTES = 64;
 
 const common = /* wgsl */ `
@@ -96,18 +96,6 @@ fn rand(x: u32) -> f32 { return f32(hash(x) >> 8u) / 16777216.0; }
 
 export const commonWGSL = common;
 
-export const clearWGSL = /* wgsl */ `${common}
-@group(0) @binding(2) var<storage, read_write> cells: array<i32>;
-
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= P.region.z || id.y >= P.region.w) { return; }
-  let ci = cellIndex(vec2i(P.region.xy + id.xy));
-  if (ci < 0) { return; }
-  for (var k = 0; k < i32(STRIDE); k++) { cells[ci + k] = 0; }
-}
-`;
-
 // Applied once per frame: carries water with a vessel for the part of its motion that exceeds the wall speed clamp.
 export const carryWGSL = /* wgsl */ `${common}
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
@@ -159,9 +147,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       atomicAdd(&cells[ci + 0], enc(mv.x));
       atomicAdd(&cells[ci + 1], enc(mv.y));
       atomicAdd(&cells[ci + 2], enc(weight));
-      ${dye ? `atomicAdd(&cells[ci + 3], enc(weight * p.dye.x));
-      atomicAdd(&cells[ci + 4], enc(weight * p.dye.y));
-      atomicAdd(&cells[ci + 5], enc(weight * p.dye.z));` : ''}
+      ${dye ? 'atomicAdd(&cells[ci + 3], enc(weight * p.dye.x));' : ''}
     }
   }
 }
@@ -196,12 +182,16 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (ci < 0) { return; }
   let fi = ci / i32(STRIDE);
   let mass = dec(cells[ci + 2]);
+  // This pass leaves the cell empty for the next substep's scatter, so no separate clear pass is needed.
+  let momentum = vec2f(dec(cells[ci + 0]), dec(cells[ci + 1]));
+  let dyeMass = dec(cells[ci + 3]);
+  for (var k = 0; k < 4; k++) { cells[ci + k] = 0; }
   if (mass <= 0.0 || c.x < 1 || c.y < 1 || c.x >= i32(P.grid.x) - 1 || c.y >= i32(P.grid.y) - 1) {
     fieldA[fi] = vec4f(0.0);
     fieldB[fi] = vec4f(0.0);
     return;
   }
-  var v = vec2f(dec(cells[ci + 0]), dec(cells[ci + 1])) / mass;
+  var v = momentum / mass;
   v += P.g.xy;
 
   let x = vec2f(c) + 0.5;
@@ -231,19 +221,17 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let churn = smoothstep(0.035, 0.16, abs(curl)) * smoothstep(0.1, 0.4, sp);
   let foam = max(fieldB[fi].w * 0.9972, churn);
 
-  cells[ci + 0] = enc(v.x);
-  cells[ci + 1] = enc(v.y);
   fieldA[fi] = vec4f(mass / P.g.w, v, sp);
   // dye mix, distance to the nearest wall and the owning vessel: particles deep inside read these
   // instead of searching the vessel rects themselves
-  fieldB[fi] = vec4f(dec(cells[ci + 3]) / mass, s.x, f32(ownerOf(x, u32(s.y))), foam);
+  fieldB[fi] = vec4f(dyeMass / mass, s.x, f32(ownerOf(x, u32(s.y))), foam);
 }
 `;
 
 export const g2pWGSL = /* wgsl */ `${common}
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
-@group(0) @binding(2) var<storage, read_write> cells: array<i32>;
-@group(0) @binding(4) var<storage, read_write> fieldB: array<vec4f>;
+@group(0) @binding(3) var<storage, read_write> fieldA: array<vec4f>; // density / rest, velocity xy, speed
+@group(0) @binding(4) var<storage, read_write> fieldB: array<vec4f>; // dye mix, wall distance, owner, foam
 @group(0) @binding(5) var<storage, read_write> counters: array<atomic<u32>>; // per window, [MAX_RECTS] = rain in transit, [MAX_RECTS + 1] = blow-ups,
 // then 16 slots of kinetic energy and 16 of wall impact, per owner (fixed point, x256)
 
@@ -271,11 +259,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       if (ci < 0) { continue; }
       let weight = w[gx].x * w[gy].y;
       let dist = (vec2f(c) + 0.5) - p.pos;
-      let wv = weight * vec2f(dec(cells[ci + 0]), dec(cells[ci + 1]));
+      let cell = fieldA[ci / i32(STRIDE)];
+      let wv = weight * cell.yz;
       v += wv;
       B += mat2x2f(wv * dist.x, wv * dist.y);
-      dyeSum += weight * vec3f(dec(cells[ci + 3]), dec(cells[ci + 4]), dec(cells[ci + 5]));
-      massSum += weight * dec(cells[ci + 2]);
+      let m = cell.x * P.g.w;
+      dyeSum += weight * vec3f(fieldB[ci / i32(STRIDE)].x * m, 0.0, 0.0);
+      massSum += weight * m;
     }
   }
   v *= P.mat.w;

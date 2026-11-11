@@ -48,7 +48,7 @@ export const WATER_LOOK: LiquidLook = {
   absorb: [0.095, 0.024, 0.028],
   tint: '#bfe6ea', tintOpacity: 0, bodyOpacity: 0,
   refraction: 10, magnification: 1.09, dispersion: 0.06, caustics: 1,
-  meniscus: 16, mirror: 0.8, foam: 1,
+  meniscus: 12, mirror: 0.8, foam: 1,
 };
 
 export function rgb(hex: string): [number, number, number] {
@@ -76,7 +76,7 @@ export const DARKROOM: Theme = {
   fineWidth: 0.6, boldWidth: 0.8, grain: 0.005,
   ink: '#c9f2e6', inkAlpha: 0.72,
   highlight: '#eafff8', highlightStrength: 0.55, glow: 0.5,
-  liquid: { absorb: [0.05, 0.0, 0.0], tint: '#174a48', tintOpacity: 0.3, bodyOpacity: 0.07, caustics: 0.8, mirror: 0.4 },
+  liquid: { absorb: [0.3, 0.1, 0.12], tint: '#174a48', tintOpacity: 0.3, bodyOpacity: 0.07, caustics: 0.8, mirror: 0.4 },
 };
 
 /** Dense millimetre paper with a red index line every centimetre. */

@@ -7,7 +7,7 @@ import { THEMES } from '../../src/render/theme';
 import { LIQUIDS } from '../../src/liquids';
 
 const q = new URLSearchParams(location.search);
-const CELL = 6, HZ = Number(q.get('hz') ?? 600), N = Number(q.get('n') ?? 100000), PX2_PER_ML = 220;
+const CELL = 6, HZ = Number(q.get('hz') ?? 480), N = Number(q.get('n') ?? 100000), PX2_PER_ML = 220;
 const theme = THEMES[q.get('theme') ?? 'bench']!;
 const motion = q.get('motion') ?? 'rest';
 const freeze = Number(q.get('freeze') ?? Infinity);
@@ -31,7 +31,7 @@ function chrome() {
   const { tickMl, major } = graduationStep(innerWidth, PX2_PER_ML);
   const pxPerMl = PX2_PER_ML / innerWidth;
   const grads = document.querySelector('#grads')!;
-  const col = { a: (3200 / (CELL * HZ * HZ)) * 3 / 0.5 / CELL, gamma: 3 };
+  const col = { a: (3200 / (CELL * HZ * HZ)) * 1 / 0.7 / CELL, gamma: 1 };
   for (let ml = tickMl * major; columnHeight(ml * pxPerMl, col) < innerHeight - 70; ml += tickMl * major) {
     const d = document.createElement('div');
     d.className = 'grad num';
@@ -111,7 +111,7 @@ async function main() {
     renderer.draw(enc, ctx.getCurrentTexture().createView(), crop.view, {
       originX: viewX + ox, originY: viewY + oy, width: W, height: H, dpr, time: t,
       cropX: gridOriginX + crop.cellX * CELL, cropY: gridOriginY + crop.cellY * CELL,
-      cellPx: CELL, px2PerMl: PX2_PER_ML, gravityX: 0, gravityY: 1, tier: Number(q.get('tier') ?? 0), column: { a: (Math.hypot(sim.liquid.gravityX, sim.liquid.gravityY) / (CELL * HZ * HZ)) * sim.liquid.eosPower / sim.liquid.soundSpeed2 / CELL, gamma: sim.liquid.eosPower },
+      cellPx: CELL, px2PerMl: PX2_PER_ML, gravityX: 0, gravityY: 1, tier: Number(q.get('tier') ?? 0), quiet: [], column: { a: (Math.hypot(sim.liquid.gravityX, sim.liquid.gravityY) / (CELL * HZ * HZ)) * sim.liquid.eosPower / sim.liquid.soundSpeed2 / CELL, gamma: sim.liquid.eosPower },
     }, theme, liquid.id === 'water' ? { ...liquid.look, ...theme.liquid } : liquid.look);
     device.queue.submit([enc.finish()]);
     requestAnimationFrame(frame);

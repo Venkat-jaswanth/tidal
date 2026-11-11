@@ -1,7 +1,7 @@
 // In-window chrome: specimen label, volume readout, specimen line, graduation numerals, controls, shortcut
-// help and credit. Everything is printed on the glass: no plates, only a tight paper-coloured halo that keeps
-// the text legible over paper and over any liquid. The only thing that moves is the readout, counting with
-// the water.
+// help and credit. Everything is printed on the glass: no plates. Text in the air keeps a hard 1 px knock-out
+// of paper around each glyph; the canvas fades its ruling out behind each block of text; text that sits under
+// a dark liquid turns paper-coloured instead. The only thing that moves is the readout, counting with the water.
 
 import { PX2_PER_ML, WORLD_ML, type Engine } from '../engine';
 import { BENCH, DARKROOM, type Theme } from '../render/theme';
@@ -24,6 +24,10 @@ export interface ChromeState {
   sound: boolean;
   performing: boolean;
   floating: boolean;
+  /** Vessels open across every screen (after a successful span). */
+  spanning?: boolean;
+  /** The stage backdrop is open. */
+  staged?: boolean;
 }
 
 export interface Chrome {
@@ -33,12 +37,13 @@ export interface Chrome {
 
 type Action = keyof ChromeActions;
 
-/** What a button shows and says. `lead` is a word printed before the value ("Liquid" Water). The name always
- *  contains the visible words, in order (WCAG 2.5.3, label in name), so speech users can say what they see. */
+/**
+ * What a button shows and says. Settings are written KEY value: `lead` is the key, printed a step quieter.
+ * The name always starts with the visible words, in order (WCAG 2.5.3, label in name), so speech users can
+ * say what they see.
+ */
 interface Face {
   lead?: string;
-  /** The lead is printed at a lower contrast than the value. */
-  quietLead?: boolean;
   text: string;
   name: string;
 }
@@ -46,10 +51,10 @@ interface Face {
 interface ButtonSpec {
   action: Action;
   key: string;
-  /** 1: actions, full ink. 2: settings, quieter. */
+  /** 1: actions. 2: settings, each KEY value. */
   row: 1 | 2;
   /** Element id, for tests and tools. */
-  id?: string;
+  id: string;
   face(s: ChromeState): Face;
   /** The state a toggle reports through aria-pressed. */
   pressed?: 'sound';
@@ -59,25 +64,30 @@ interface ButtonSpec {
 const BUTTONS: readonly ButtonSpec[] = [
   { action: 'addVessel', key: 'v', row: 1, id: 'add', help: 'Add a vessel',
     face: () => ({ text: '+ Vessel', name: 'Add a vessel' }) },
-  { action: 'float', key: 'f', row: 1, id: 'float', help: 'Float',
-    face: (s) => (s.floating ? { text: 'Unfloat', name: 'Unfloat: close the floating tank' } : { text: 'Float', name: 'Float: open the floating tank' }) },
+  { action: 'float', key: 'f', row: 1, id: 'float', help: 'Float a tank',
+    face: (s) => (s.floating
+      ? { text: 'Sink the tank', name: 'Sink the tank: close the floating tank' }
+      : { text: 'Float a tank', name: 'Float a tank: open the floating tank' }) },
   { action: 'perform', key: 'p', row: 1, id: 'perform', help: 'Perform',
-    face: (s) => (s.performing ? { text: 'Stop', name: 'Stop the performance' } : { text: 'Perform', name: 'Perform: start the performance' }) },
+    face: (s) => (s.performing
+      ? { text: 'Stop', name: 'Stop the performance' }
+      : { text: 'Perform', name: 'Perform: start the performance' }) },
   { action: 'cycleLiquid', key: 'l', row: 2, id: 'liquid', help: 'Change liquid',
-    face: (s) => ({ lead: 'Liquid', quietLead: true, text: capital(s.liquid), name: `Liquid: ${s.liquid}. Change liquid` }) },
+    face: (s) => ({ lead: 'Liquid', text: capital(s.liquid), name: `Liquid: ${s.liquid}. Change liquid` }) },
   { action: 'toggleSound', key: 's', row: 2, id: 'sound', pressed: 'sound', help: 'Sound on or off',
-    face: (s) => ({ lead: 'Sound', text: s.sound ? 'On' : 'Off', name: s.sound ? 'Sound on. Turn sound off' : 'Sound off. Turn sound on' }) },
-  { action: 'spanScreens', key: 'm', row: 2, id: 'span', help: 'Span screens',
-    face: () => ({ text: 'Span', name: 'Span: place vessels on another screen' }) },
+    face: (s) => ({ lead: 'Sound', text: s.sound ? 'On' : 'Off', name: s.sound ? 'Sound: on. Turn sound off' : 'Sound: off. Turn sound on' }) },
+  { action: 'spanScreens', key: 'm', row: 2, id: 'span', help: 'Screens',
+    face: (s) => ({ lead: 'Screens', text: s.spanning ? 'All' : 'One', name: s.spanning ? 'Screens: all. Vessels open across every screen' : 'Screens: one. Place vessels on other screens' }) },
   { action: 'stage', key: 'g', row: 2, id: 'stage', help: 'Stage',
-    face: () => ({ text: 'Stage', name: 'Open the stage backdrop' }) },
+    face: (s) => ({ lead: 'Stage', text: s.staged ? 'On' : 'Off', name: s.staged ? 'Stage: on. Close the stage backdrop' : 'Stage: off. Open the stage backdrop' }) },
 ];
 
 const ARROWS: Record<string, readonly [number, number]> = {
   ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
 };
 
-// Side bearings, em, measured from public/fonts (canvas measureText on the loaded faces).
+// Side bearings, em, measured from public/fonts (canvas measureText on the loaded faces). Being in em, they
+// hold at any size the readout is set in.
 /** Left side bearing of each B612 Mono digit. */
 const DIGIT_LSB = [0.0705, 0.0925, 0.0915, 0.1135, 0.0755, 0.124, 0.0765, 0.0885, 0.0745, 0.075];
 /** Right side bearing of each B612 Mono digit. */
@@ -90,19 +100,31 @@ const M_LSB = 0.1;
 const BOWL = 0.008;
 const BOWLS = '0689';
 const MONO_ADVANCE = 0.65;
-/** Middle of a B612 Mono digit above the centre of a 9/9 px line box, px. */
-const TICK_CAP_MID = 9 / 2 - 0.025 * 9;
+/** Baseline of 9 px B612 Mono in a 9 px line box: (9 - 1.21 × 9) / 2 + 0.96 × 9. */
+const TICK_BASELINE = 7.695;
+/** A numeral's baseline sits this far above the centre of its 1 px tick: half the line, then 2 px clear. */
+const TICK_LIFT = 2.5;
+/** The scale's "mL" sits one line (11 px, baseline to baseline) above the topmost numeral. */
+const UNIT_PITCH = 11;
 /** The controls' right edge (their box; the ink stops a pixel further in), px. */
 const SIDE_RIGHT = 17;
 /** Least clear space between the specimen stack and the controls, px. */
 const GUTTER = 24;
+/** Quiet zones are the text's boxes plus this much; the canvas adds its own feather. */
+const QUIET_PAD = 3;
 /** Readout spring stiffness, rad/s. Critically damped, so it counts without overshoot. */
 const SPRING = 9;
-/** The specimen line changes at most this often. */
+/** The specimen line, and which text sits under the liquid, change at most this often. */
 const SPEC_EVERY_MS = 250;
 /** Rain is worth a line above this much in the air, mL; the line stays this long after it falls below. */
 const RAIN_ML = 5;
 const RAIN_HOLD_MS = 750;
+/**
+ * How text under a resting liquid is printed on the light theme, where a knock-out would only draw a rim around
+ * it. Chosen by contrast measured against the rendered body near the floor: paper on ink 8.7 to 11.7:1; on
+ * honey paper manages only 1.8 to 2.4:1 but full ink 5.1 to 6.7:1. Other liquids keep the knocked-out ink.
+ */
+const UNDER: Record<string, 'paper' | 'ink'> = { ink: 'paper', honey: 'ink' };
 
 interface Sizes {
   label: number;
@@ -111,14 +133,16 @@ interface Sizes {
   /** Clear space between the last digit's ink and the unit's ink, px. */
   unitGap: number;
 }
-const FULL: Sizes = { label: 11, num: 56, unit: 11, unitGap: 9.5 };
+const FULL: Sizes = { label: 11, num: 48, unit: 11, unitGap: 8 };
 const COMPACT: Sizes = { label: 10, num: 28, unit: 9, unitGap: 5 };
 
 const clampMl = (ml: number): number => Math.min(WORLD_ML, Math.max(0, ml));
 
+interface Rect { left: number; top: number; right: number; bottom: number }
+
 export function mountChrome(doc: Document, engine: Engine, actions: ChromeActions, initial: ChromeState): Chrome {
   const view = doc.defaultView ?? window;
-  const state: ChromeState = { ...initial };
+  const state: ChromeState = { spanning: false, staged: false, ...initial };
 
   // What can work here: popups and picture-in-picture windows only change the liquid and the sound.
   const pip = doc !== document;
@@ -172,11 +196,8 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   const unit = el(doc, 'span', 'tc-unit', 'mL');
   readout.append(num, unit);
 
-  // Specimen line: what is in the tank and how much of the world it holds.
-  const specimen = el(doc, 'div', 'tc-spec');
-  const specLiquid = el(doc, 'span');
-  const specShare = el(doc, 'span', 'tc-n', '0');
-  specimen.append(specLiquid, ', ', specShare, '% of ', el(doc, 'span', 'tc-n', String(WORLD_ML)), ' ', el(doc, 'span', 'tc-u', 'mL'));
+  // Specimen line: what is in the tank, how much of the litre, among how many vessels.
+  const specimen = el(doc, 'div', 'tc-spec tc-spec-main');
 
   // Rain in the air: its own line, only while there is any.
   const rain = el(doc, 'div', 'tc-spec tc-rain');
@@ -202,16 +223,15 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   for (const spec of BUTTONS) {
     const button = el(doc, 'button', 'tc-btn');
     button.type = 'button';
-    const face = spec.face(state);
     let lead: HTMLSpanElement | null = null;
-    if (face.lead !== undefined) {
-      lead = el(doc, 'span', face.quietLead ? 'tc-lead tc-lead-quiet' : 'tc-lead', face.lead);
+    if (spec.face(state).lead !== undefined) {
+      lead = el(doc, 'span', 'tc-lead');
       button.append(lead, ' ');
     }
     const text = el(doc, 'span', 'tc-value');
     button.append(text);
     button.hidden = !can[spec.action];
-    if (spec.id) button.id = spec.id;
+    button.id = spec.id;
     button.title = `Shortcut: ${spec.key.toUpperCase()}`;
     button.setAttribute('aria-keyshortcuts', spec.key.toUpperCase());
     button.addEventListener('click', () => actions[spec.action]());
@@ -238,8 +258,9 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   side.append(rows[1], rows[2], help);
 
   root.append(scale, stack, side);
+  let credit: HTMLElement | null = null;
   if (!limited) {
-    const credit = el(doc, 'footer', 'tc-credit');
+    credit = el(doc, 'footer', 'tc-credit');
     credit.append(el(doc, 'span', undefined, 'Venkat Jaswanth'));
     root.append(credit);
   }
@@ -263,6 +284,7 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   const onScheme = () => {
     engine.theme = schemeQuery.matches ? DARKROOM : BENCH;
     applyTheme(engine.theme);
+    markUnder();
   };
   schemeQuery.addEventListener('change', onScheme);
 
@@ -328,8 +350,7 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   // ---------------------------------------------------------------- specimen line
 
   let specAt = -Infinity;
-  let shareShown = -1;
-  let liquidShown = '';
+  let specShown = '';
   let rainShown = -1;
   let rainOn = false;
   let rainSeenAt = -Infinity;
@@ -344,22 +365,24 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   };
 
   /** Returns true when the specimen stack changed width. */
-  const renderSpec = (e: Engine, now: number): boolean => {
+  const renderSpec = (now: number): boolean => {
     let changed = false;
-    if (state.liquid !== liquidShown) {
-      liquidShown = state.liquid;
+    // "Water, the whole litre, 1 vessel" or "Water, 43% of the litre, 3 vessels"
+    const ml = Math.round(clampMl(engine.ml));
+    const whole = ml >= WORLD_ML;
+    // short of the whole litre, never round up to 100%
+    const share = Math.min(99, Math.round((100 * ml) / WORLD_ML));
+    const count = engine.registry.all().length;
+    const key = `${state.liquid} ${whole ? 'whole' : share} ${count}`;
+    if (key !== specShown) {
+      specShown = key;
       const name = capital(state.liquid);
-      specLiquid.textContent = name;
+      const amount = whole ? ['the whole litre'] : [el(doc, 'span', 'tc-n', String(share)), '% of the litre'];
+      specimen.replaceChildren(name, ', ', ...amount, ', ', el(doc, 'span', 'tc-n', String(count)), count === 1 ? ' vessel' : ' vessels');
       alignCap(specimen, name);
       changed = true;
     }
-    const share = Math.round((100 * clampMl(e.ml)) / WORLD_ML);
-    if (share !== shareShown) {
-      shareShown = share;
-      specShare.textContent = String(share);
-      changed = true;
-    }
-    const falling = e.meta?.rainMl ?? 0;
+    const falling = engine.meta?.rainMl ?? 0;
     if (falling > RAIN_ML) rainSeenAt = now;
     const on = falling > RAIN_ML || now - rainSeenAt < RAIN_HOLD_MS;
     if (on) {
@@ -380,6 +403,61 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
     return changed;
   };
 
+  // ---------------------------------------------------------------- graduation numerals
+
+  /** Each numeral (and the scale's unit) with the height of its baseline's tick above the floor, px. */
+  let marks: { el: HTMLElement; height: number }[] = [];
+
+  /** Numerals just above the major graduations the canvas etches, kept clear of the label stack. */
+  const buildScale = (w: number, h: number) => {
+    const { tickMl, major } = graduationStep(w, PX2_PER_ML);
+    const every = tickMl * major;
+    // the rain line keeps its place while hidden, so the numerals do not come and go with the rain
+    const clear = Math.max(24, stack.getBoundingClientRect().bottom + 8);
+    const placed: { ml: number; height: number; baseline: number }[] = [];
+    for (let ml = every; engine.heightOfMl(ml, w) <= h; ml += every) {
+      const height = engine.heightOfMl(ml, w);
+      const baseline = h - height - TICK_LIFT;
+      if (baseline - TICK_BASELINE < clear) break;
+      placed.push({ ml, height, baseline });
+    }
+    // the unit goes once, a line above the topmost numeral; if that would reach the stack, drop that numeral
+    const top = placed[placed.length - 1];
+    if (top && top.baseline - UNIT_PITCH - TICK_BASELINE < clear) placed.pop();
+    const frag = doc.createDocumentFragment();
+    marks = [];
+    const mark = (text: string, cls: string, baseline: number, height: number) => {
+      const m = el(doc, 'span', cls, text);
+      m.style.top = `${(baseline - TICK_BASELINE).toFixed(2)}px`;
+      frag.append(m);
+      marks.push({ el: m, height });
+    };
+    for (const p of placed) mark(String(p.ml), 'tc-tick', p.baseline, p.height);
+    const highest = placed[placed.length - 1];
+    if (highest) mark('mL', 'tc-tick tc-tick-unit', highest.baseline - UNIT_PITCH, h - (highest.baseline - UNIT_PITCH));
+    scale.replaceChildren(frag);
+    markUnder();
+  };
+
+  /**
+   * On the light theme a deep-coloured liquid needs its own print for the text below its resting surface:
+   * paper under ink, full ink under honey, with no knock-out (see UNDER). Elsewhere text stays ink, knocked out.
+   */
+  function markUnder() {
+    const w = view.innerWidth, h = view.innerHeight;
+    // The resting surface only means something while the liquid rests on the floor: with gravity turned
+    // or tilted away, the bottom of the tank is air and paper-coloured text there would vanish.
+    const meta = engine.meta;
+    const down = !meta || (meta.gravityY > 0 && Math.abs(meta.gravityX) <= 0.5 * meta.gravityY);
+    const how = down && !isDark(engine.theme) ? UNDER[engine.liquid.id] : undefined;
+    const surface = how ? engine.heightOfMl(clampMl(engine.ml), w) : -Infinity;
+    const set = (e: HTMLElement, under: boolean) => {
+      if (under && how) e.dataset.under = how; else delete e.dataset.under;
+    };
+    for (const m of marks) set(m.el, m.height < surface - 0.5);
+    if (credit) set(credit, h - credit.getBoundingClientRect().top < surface);
+  }
+
   // ---------------------------------------------------------------- layout
 
   let helpOpen = false;
@@ -388,40 +466,68 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
     help.hidden = !helpOpen;
   };
 
-  /** Numerals beside the major graduations the canvas etches, kept clear of the top edge and the label stack. */
-  const buildScale = (w: number, h: number) => {
-    const { tickMl, major } = graduationStep(w, PX2_PER_ML);
-    const every = tickMl * major;
-    // the rain line keeps its place while hidden, so the numerals do not come and go with the rain
-    const clear = Math.max(24, stack.getBoundingClientRect().bottom + 8);
-    const frag = doc.createDocumentFragment();
-    for (let ml = every; engine.heightOfMl(ml, w) <= h; ml += every) {
-      const y = h - engine.heightOfMl(ml, w);
-      if (y < clear) break;
-      const tick = el(doc, 'span', 'tc-tick', String(ml));
-      tick.style.top = `${(y - TICK_CAP_MID).toFixed(2)}px`;
-      frag.append(tick);
-    }
-    scale.replaceChildren(frag);
+  /** The readout's box as if it showed four digits, so neither the rows nor the quiet zone move as it counts. */
+  const readoutBox = (): Rect => {
+    const r = readout.getBoundingClientRect();
+    const extra = Math.max(0, 4 - String(Math.max(0, shown)).length) * MONO_ADVANCE * sizes.num;
+    return { left: r.left, top: r.top, right: r.right + extra, bottom: r.bottom };
   };
 
-  /** Rows wrap rather than reach over the stack: the first row beside the label, the rest beside the readout. */
+  /**
+   * Rows wrap rather than reach over the stack. The first row sits beside the label and the next lines beside
+   * the readout, so each row is first fitted to that; only if a wrapped line then comes down beside the
+   * (wider) specimen lines is the row narrowed to clear those too.
+   */
   const fit = () => {
     if (compact) return;
     const w = view.innerWidth;
-    const right = (e: Element) => e.getBoundingClientRect().right;
-    // the readout is fitted at four digits, so the controls do not move as it counts
-    const readoutRight = right(readout) + Math.max(0, 4 - String(Math.max(0, shown)).length) * MONO_ADVANCE * sizes.num;
-    const lower = Math.max(readoutRight, right(specimen), rainOn ? right(rain) : 0);
+    const rect = (e: Element): Rect => e.getBoundingClientRect();
+    const lines = [rect(label), readoutBox(), rect(specimen), ...(rainOn ? [rect(rain)] : [])];
+    const lower = Math.max(...lines.slice(1).map((l) => l.right));
     const room = (edge: number) => `${Math.max(0, Math.floor(w - SIDE_RIGHT - edge - GUTTER))}px`;
+    const clashes = (r: HTMLElement) => Array.from(r.children).some((b) => {
+      if ((b as HTMLElement).hidden) return false;
+      const br = rect(b);
+      return lines.some((l) => br.top < l.bottom && br.bottom > l.top && br.left < l.right + GUTTER);
+    });
     let first = true;
     for (const r of [rows[1], rows[2]]) {
       if (r.hidden) continue;
-      r.style.maxWidth = room(first ? right(label) : lower);
+      r.style.maxWidth = room(first ? lines[0]!.right : lines[1]!.right);
+      if (clashes(r)) r.style.maxWidth = room(lower);
       first = false;
     }
     // the shortcut list keeps its natural width: narrow enough to clear the stack at any width that shows it
   };
+
+  /** Tell the canvas where text sits, so its ruling fades out behind it instead of striking through. */
+  const quiet = () => {
+    const union = (rs: Rect[]): Rect | null => (rs.length === 0 ? null : {
+      left: Math.min(...rs.map((r) => r.left)), top: Math.min(...rs.map((r) => r.top)),
+      right: Math.max(...rs.map((r) => r.right)), bottom: Math.max(...rs.map((r) => r.bottom)),
+    });
+    const zone = (r: Rect | null) => (r ? [{
+      x: r.left - QUIET_PAD, y: r.top - QUIET_PAD,
+      w: r.right - r.left + 2 * QUIET_PAD, h: r.bottom - r.top + 2 * QUIET_PAD,
+    }] : []);
+    const lines: Rect[] = [label.getBoundingClientRect(), readoutBox()];
+    if (!compact) {
+      lines.push(specimen.getBoundingClientRect());
+      if (rainOn) lines.push(rain.getBoundingClientRect());
+    }
+    const zones = zone(union(lines));
+    if (!compact) {
+      for (const r of [rows[1], rows[2]]) {
+        if (r.hidden) continue;
+        const shownButtons = Array.from(r.children).filter((b) => !(b as HTMLElement).hidden).map((b) => b.getBoundingClientRect());
+        zones.push(...zone(union(shownButtons)));
+      }
+      if (credit) zones.push(...zone(credit.getBoundingClientRect()));
+    }
+    engine.setQuietZones(zones.slice(0, 4), engine.slot);
+  };
+
+  const reflow = () => { fit(); quiet(); };
 
   const layout = () => {
     const w = view.innerWidth, h = view.innerHeight;
@@ -431,7 +537,7 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
     if (compact) setHelp(false);
     alignCap(label, compact ? 'V' : 'T');
     renderNumber(true);
-    fit();
+    reflow();
     if (w > 0 && h > 0) buildScale(w, h);
   };
 
@@ -447,8 +553,8 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
       parts.button.setAttribute('aria-label', face.name);
       if (spec.pressed) parts.button.setAttribute('aria-pressed', String(state[spec.pressed]));
     }
-    renderSpec(engine, performance.now());
-    fit();
+    renderSpec(performance.now());
+    reflow();
   };
 
   // ---------------------------------------------------------------- input
@@ -496,16 +602,18 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
   const onFrame = () => {
     const e = engine;
     const now = performance.now();
+    // each liquid stands at its own height for a volume, and the etched graduations follow it
     if (e.liquid.id !== scaleFor) { scaleFor = e.liquid.id; buildScale(view.innerWidth, view.innerHeight); }
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    if (e.theme !== applied) applyTheme(e.theme);
+    if (e.theme !== applied) { applyTheme(e.theme); markUnder(); }
     if (e.slot !== slotShown) { slotShown = e.slot; renderLabel(e.slot); }
     if (!e.meta) return;
     stepReadout(clampMl(e.ml), dt);
     if (now - specAt >= SPEC_EVERY_MS) {
       specAt = now;
-      if (renderSpec(e, now)) fit();
+      if (renderSpec(now)) reflow();
+      markUnder();
     }
   };
 
@@ -527,6 +635,7 @@ export function mountChrome(doc: Document, engine: Engine, actions: ChromeAction
     destroy() {
       alive = false;
       engine.frameListeners.delete(onFrame);
+      engine.setQuietZones([], engine.slot);
       view.removeEventListener('resize', layout);
       view.removeEventListener('keydown', onKey);
       schemeQuery.removeEventListener('change', onScheme);

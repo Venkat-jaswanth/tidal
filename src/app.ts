@@ -110,7 +110,10 @@ async function main(): Promise<void> {
   let sittingOut = query.has('inactive');
   const restingActive = (): boolean => !sittingOut && !(stageOpen() && engine.registry.all().some((v) => v.kind === 'popup'));
   engine.setActive(restingActive());
-  setInterval(() => { if (!performer.performing) engine.setActive(restingActive()); }, 500);
+  setInterval(() => {
+    if (!performer.performing) engine.setActive(restingActive());
+    if (state.staged && !stageOpen()) set({ staged: false });
+  }, 500);
 
   // ---- perform ----
   const performer = new Performer(engine, window, restingActive);
@@ -177,11 +180,12 @@ async function main(): Promise<void> {
     },
     toggleSound: () => setSound(!state.sound),
     spanScreens: () => {
-      void requestSpan().then((r) => { spanning = r.ok; });
+      void requestSpan().then((r) => { spanning = r.ok; set({ spanning: r.ok }); });
     },
     stage: () => {
-      if (stageOpen()) { stage?.close(); stage = null; return; }
+      if (stageOpen()) { stage?.close(); stage = null; set({ staged: false }); return; }
       stage = openStage();
+      set({ staged: stageOpen() });
       // the backdrop opens in front; put the vessels back on top of it
       setTimeout(raiseVessels, 300);
     },
