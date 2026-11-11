@@ -170,7 +170,9 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
   let e = 2.0;
   let grad = vec2f(wet(world + vec2f(e, 0.0)).r - wet(world - vec2f(e, 0.0)).r, wet(world + vec2f(0.0, e)).r - wet(world - vec2f(0.0, e)).r) / (2.0 * e);
   let gl = max(length(grad), 1e-4);
-  let sd = (d - 0.5) / gl;                       // signed px distance to the surface, positive inside
+  // signed px distance to the surface, positive inside; fast liquid gets a fine ripple on its edge
+  let fast = clamp(f.a * 3.0, 0.0, 1.0);
+  let sd = (d - 0.5) / gl + (vnoise(world * 0.22 + vec2f(u.time * 3.1, -u.time * 2.3)) - 0.5) * 2.0 * fast * clamp(u.optics2.z, 0.0, 1.0);
   let inside = clamp(sd * u.dpr + 0.5, 0.0, 1.0);
   let n = -grad / gl;                            // points out of the liquid
 
@@ -232,13 +234,14 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
       let c2 = caustic(vec2f(cw.x * 0.8 - cw.y * 0.6, cw.x * 0.6 + cw.y * 0.8) / 113.0 * TAU + 2.0, u.time * 0.37 + 4.0);
       cau = smoothstep(0.1, 0.9, max(c1, c2 * 0.8));
     }
-    let lively = 0.3 + 0.7 * clamp(abs(rawSlope) * 2.5 + speed * 1.5, 0.0, 1.0);
+    let lively = 0.1 + 0.9 * clamp(abs(rawSlope) * 2.5 + speed * 1.5, 0.0, 1.0);
     let lit = u.optics.w * cau * lively * smoothstep(6.0, 70.0, depth) * (0.5 + 0.5 * exp(-depth / 300.0));
     seen = seen * (1.0 + lit * 0.07) + u.highlight.rgb * lit * (0.03 + 0.2 * u.optics2.w);
 
     // Beer-Lambert absorption along the column of liquid above: a pure multiply.
     var body = seen * exp(-u.absorb.rgb * depth / 100.0);
-    let opacity = u.absorb.w + u.tint.a * (1.0 - exp(-depth / 60.0));
+    var opacity = u.absorb.w * (1.0 - exp(-depth / 9.0)) + u.tint.a * (1.0 - exp(-depth / 60.0));
+    if (u.inkB.w < 0.0) { opacity = 1.0; }
     var bodyColour = u.tint.rgb;
     if (u.inkB.w > 0.5) {
       // two inks: mix in a perceptually even way and let thin layers stay bright
@@ -251,9 +254,11 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
       // darkened; a hard band of light runs just inside the surface; edges facing the eye brighten.
       let rimf = exp(-max(sd, 0.0) / 12.0);
       let up = -n.y;
-      let refl = paperAt(vec2f(world.x + slope * 30.0, world.y - 2.0 * depth - 8.0) + n * rimf * 26.0, 9.0);
+      let refl = paperAt(vec2f(world.x + slope * 30.0, world.y - 2.0 * depth - 8.0) + n * rimf * 26.0, 2.5);
       let deep = 1.0 - exp(-depth / 260.0);
-      var metal = refl * mix(vec3f(0.86, 0.885, 0.91), vec3f(0.56, 0.59, 0.64), deep);
+      let ruled = smoothstep(0.012, 0.06, dot(u.paper.rgb, vec3f(0.333)) - dot(refl, vec3f(0.333)));
+      var metal = mix(vec3f(0.9, 0.915, 0.935), vec3f(0.5, 0.53, 0.58), deep);
+      metal = mix(metal, vec3f(0.29, 0.31, 0.34), ruled * 0.5);
       // a broad soft sheen across the body, as a curved mirror shows of a bright room
       metal += vec3f(0.1) * (0.5 + 0.5 * sin(world.x * 0.006 + slope * 2.0 + 1.3)) * (1.0 - deep);
       metal = mix(metal, vec3f(1.0), exp(-pow((sd - 6.0) / 3.2, 2.0)) * smoothstep(0.15, 0.85, up) * 0.9);
@@ -271,8 +276,8 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     let floorBand = exp(-floorDist / 34.0);
     if (floorBand > 0.02 && u.quality.y > 0.5) {
       // the same network of focused light as in the body, drawn sharp and bright where it lands
-      let strength = u.optics.w * floorBand * smoothstep(8.0, 50.0, depth) * (1.0 - 0.5 * u.optics2.w);
-      body = mix(body, u.highlight.rgb, clamp(strength * smoothstep(0.35, 0.95, cau) * 0.75, 0.0, 0.8));
+      let strength = u.optics.w * floorBand * smoothstep(8.0, 50.0, depth) * (1.0 - 0.75 * u.optics2.w);
+      body = mix(body, u.highlight.rgb, clamp(strength * smoothstep(0.12, 0.8, cau) * 0.8, 0.0, 0.8));
     }
 
     // Seen from just below, the surface is a mirror: a narrow silvery band that squeezes the ruling.
@@ -314,9 +319,6 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     // faces the light and vanishes where it turns away, then a soft gloss on thick liquids.
     let upness = clamp(-dot(n, u.gravity), -1.0, 1.0);
     let facing = clamp(dot(n, normalize(vec2f(-0.45, -1.0))), 0.0, 1.0);
-    let rimDark = (1.0 - smoothstep(0.0, 3.0, sd)) * (0.09 + 0.14 * (1.0 - facing)) * (1.0 - u.optics2.w);
-    body *= 1.0 - rimDark;
-    body *= 1.0 - 0.05 * exp(-max(sd, 0.0) / 10.0) * (1.0 - u.optics2.w);
 
     let specWidth = mix(0.4, 1.5, facing * facing);
     let spec = (1.0 - smoothstep(specWidth * 0.5, specWidth * 0.5 + 0.7, abs(sd - 1.4 - specWidth * 0.5))) * (0.06 + 0.94 * facing * facing);
@@ -325,6 +327,16 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     body = mix(body, u.highlight.rgb, gloss);
 
     col = mix(col, body, inside);
+  } else if (f.g > 6.0 && sd < 0.0 && wet(world + side * 16.0).r > 0.4 && wet(world - side * 16.0).r > 0.4 && wet(world + u.gravity * 16.0).r > 0.4) {
+    // (only a small pocket closed in on every side counts; the air under an overhang is just air)
+    // an air pocket under the surface: the paper shows through it lightly tinted by the liquid
+    // around it, with a bright arc where its upper rim catches the light
+    let tintIn = mix(vec3f(1.0), exp(-u.absorb.rgb * f.g / 100.0), 0.55);
+    var pocket = paperAt(world + n * min(-sd, 12.0) * 0.5, aa0 * 1.5) * tintIn;
+    pocket = mix(pocket, u.tint.rgb, clamp(u.absorb.w * 0.35, 0.0, 1.0));
+    let arc = (1.0 - smoothstep(0.6, 2.2, -sd)) * smoothstep(0.1, 0.8, n.y - n.x * 0.4);
+    pocket = mix(pocket, u.highlight.rgb, arc * 0.8);
+    col = pocket;
   } else if (d > 0.04 && d < 0.42 && f.a > 0.1 && u.quality.z > 0.5 && u.optics2.z > 0.5) {
     // Spray and rain: liquid too thin to form a body is drawn as drops. The drops travel with the
     // liquid (the pattern falls along gravity at the liquid's speed) and stretch along their fall.

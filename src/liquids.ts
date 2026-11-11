@@ -27,7 +27,7 @@ export const LIQUIDS: Record<string, LiquidDef> = {
     physics: { ...WATER, gravityY: 2600, viscosity: 2.2, damping: 0.9985, soundSpeed2: 0.6 },
     look: {
       ...WATER_LOOK,
-      absorb: [0.06, 0.26, 0.9], tint: '#d9901a', tintOpacity: 0.3, bodyOpacity: 0.48,
+      absorb: [0.07, 0.3, 1.05], tint: '#d9901a', tintOpacity: 0.3, bodyOpacity: 0.26,
       refraction: 16, magnification: 1.16, dispersion: 0.03, caustics: 0.15,
       meniscus: 13, mirror: 0.6, foam: 0.25,
     },
@@ -38,7 +38,7 @@ export const LIQUIDS: Record<string, LiquidDef> = {
     physics: { ...WATER, dyeMix: 0.006 },
     look: {
       ...WATER_LOOK,
-      absorb: [0.05, 0.05, 0.05], tint: INK_ULTRAMARINE, inkB: INK_CADMIUM, tintOpacity: 0.12, bodyOpacity: 0.82,
+      absorb: [0.05, 0.05, 0.05], tint: INK_ULTRAMARINE, inkB: INK_CADMIUM, tintOpacity: 0.1, bodyOpacity: 0.88,
       caustics: 0.04, mirror: 0.5, foam: 0,
     },
   },

@@ -301,7 +301,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     }
     p.win = u32(deep.z);
     particles[id.x] = p;
-    atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u);
+    // liquid in flight (thin and moving) is counted as falling, not as held by a vessel
+    if (massSum < 0.3 * P.g.w && length(p.vel) > 0.1) { atomicAdd(&counters[MAX_RECTS], 1u); } else { atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u); }
     atomicAdd(&counters[MAX_RECTS + 4u + min(p.win, 15u)], u32(dot(p.vel, p.vel) * 256.0));
     return;
   }
@@ -327,7 +328,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         pick -= wgt;
       }
       let t = P.rects[ti];
-      p.pos = vec2f(mix(t.box.x + m + 1.0, t.box.z - m - 1.0, rand(seed + 1u)), t.box.y + m + 0.5 + 2.0 * rand(seed + 2u));
+      // (kept a few cells off the walls, so rain fills a flat pool instead of running down the glass)
+      p.pos = vec2f(mix(t.box.x + m + 6.0, t.box.z - m - 6.0, rand(seed + 1u)), t.box.y + m + 0.5 + 2.0 * rand(seed + 2u));
       // released already falling, so rain leaves the top edge at once instead of gathering there
       p.vel = t.vel.xy + P.g.xy * 150.0;
       p.C = vec4f(0.0);
@@ -354,7 +356,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   }
   p.win = ownerOf(p.pos, ri);
   particles[id.x] = p;
-  atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u);
+  if (massSum < 0.3 * P.g.w && length(p.vel) > 0.1) { atomicAdd(&counters[MAX_RECTS], 1u); } else { atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u); }
   atomicAdd(&counters[MAX_RECTS + 4u + min(p.win, 15u)], u32(dot(p.vel, p.vel) * 256.0));
 }
 `;

@@ -19,7 +19,7 @@ const liquid = (page, id) => page.evaluate((id) => window.tidal.command({ type: 
   const { context, page } = await open();
   await page.waitForTimeout(7000);
   await page.screenshot({ path: `${out}/${scheme}-rest.png` });
-  for (let i = 0; i < 7; i++) { await kick(page, 1, -0.15); await page.waitForTimeout(100); }
+  for (let i = 0; i < 5; i++) { await kick(page, 1, -0.15); await page.waitForTimeout(100); }
   for (let i = 0; i < 8; i++) { await page.waitForTimeout(150); await page.screenshot({ path: `${out}/${scheme}-slosh-${i}.png` }); }
   await context.close();
 }
@@ -36,7 +36,7 @@ if (scheme === 'light') {
     await page.waitForTimeout(2500);
     if (id === 'ink') { // two inks need two bodies: recolour half by hand through a second vessel is not available here, so just slosh
     }
-    for (let i = 0; i < 6; i++) { await kick(page, -1, -0.15); await page.waitForTimeout(100); }
+    for (let i = 0; i < 4; i++) { await kick(page, -1, -0.15); await page.waitForTimeout(100); }
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${out}/${scheme}-${id}-slosh.png` });
     await page.waitForTimeout(12000);

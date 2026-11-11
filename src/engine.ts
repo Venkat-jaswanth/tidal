@@ -31,7 +31,7 @@ const PERSIST_MS = 2000;
 // Measured on the real solver: resting energy is about 3e-5, and a hard slosh slaps the glass at about 1.4e-3 raw.
 const ENERGY_FLOOR = 6e-5;
 const REST_ENERGY = 3e-4;
-const IMPULSE_SECONDS = 0.075;
+const IMPULSE_SECONDS = 0.06;
 const IMPACT_GAIN = 4;
 const STALL_MS = 700;         // a visible follower takes over after this long without a frame from the leader
 const SNAPSHOT_BROADCAST_MS = 500;
@@ -388,7 +388,7 @@ export class Engine {
       const u = new Uint32Array(bytes);
       for (let i = 0; i < saved.count; i++) {
         const o = i * 16;
-        f[o] = r.x0 + 2.5 + Math.random() * (r.x1 - r.x0 - 5);
+        f[o] = r.x0 + 7 + Math.random() * (r.x1 - r.x0 - 14);
         f[o + 1] = r.y0 + 1.6 + Math.random() * 2;
         f[o + 2] = 0; f[o + 3] = 0.3;
         f[o + 11] = 0.05 + Math.random() * 1.6;
@@ -410,7 +410,7 @@ export class Engine {
         const f = new Float32Array(block);
         for (let i = 0; i < n; i++) {
           const o = i * 16;
-          f[o] = r.x0 + 2.5 + Math.random() * (r.x1 - r.x0 - 5);
+          f[o] = r.x0 + 7 + Math.random() * (r.x1 - r.x0 - 14);
           f[o + 1] = r.y0 + 1.6 + Math.random() * 2;
           f[o + 2] = 0; f[o + 3] = 0.3;
           f[o + 11] = 0.05 + Math.random() * 1.5;

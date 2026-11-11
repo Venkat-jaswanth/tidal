@@ -60,7 +60,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       if (!inGrid(q)) { break; }
       let cover = clamp((a_(q) - 0.25) * 2.0, 0.0, 1.0);
       d += cover;
-      if (cover < 0.05) { gap++; if (gap > 5) { break; } } else { gap = 0; }
+      if (cover < 0.05) { gap++; if (gap > 16) { break; } } else { gap = 0; }
     }
     depth += d * (3.0 - abs(f32(a))) / 9.0;
   }
