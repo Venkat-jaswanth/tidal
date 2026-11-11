@@ -31,6 +31,7 @@ const PERSIST_MS = 2000;
 // Measured on the real solver: resting energy is about 3e-5, and a hard slosh slaps the glass at about 1.4e-3 raw.
 const ENERGY_FLOOR = 6e-5;
 const REST_ENERGY = 3e-4;
+const IMPULSE_SECONDS = 0.075;
 const IMPACT_GAIN = 4;
 const STALL_MS = 700;         // a visible follower takes over after this long without a frame from the leader
 const SNAPSHOT_BROADCAST_MS = 500;
@@ -150,7 +151,7 @@ export class Engine {
   private lastSnapshotBroadcast = 0;
   private snapshotBusy = false;
   private gravity: [number, number] = [0, 1];
-  private impulse: [number, number, number] = [0, 0, 0]; // x, y, frames left
+  private impulse: [number, number, number] = [0, 0, 0]; // x, y, seconds left
   private calm = false;
   private knownSlots = new Set<number>();
   private lastMl: number[] | null = null;
@@ -340,7 +341,7 @@ export class Engine {
       const next = this.liquids[c.value];
       if (next) this.liquid = next;
     } else if (c.cmd === 'impulse') {
-      this.impulse = [c.x, c.y, 5];
+      this.impulse = [c.x, c.y, IMPULSE_SECONDS];
     } else if (c.cmd === 'gravity') {
       this.gravity = [c.x, c.y];
     } else if (c.cmd === 'calm') {
@@ -389,7 +390,7 @@ export class Engine {
         const o = i * 16;
         f[o] = r.x0 + 2.5 + Math.random() * (r.x1 - r.x0 - 5);
         f[o + 1] = r.y0 + 1.6 + Math.random() * 2;
-        f[o + 2] = 0; f[o + 3] = 0.05;
+        f[o + 2] = 0; f[o + 3] = 0.3;
         f[o + 11] = 0.05 + Math.random() * 1.6;
         u[o + 12] = s.slot;
       }
@@ -411,7 +412,7 @@ export class Engine {
           const o = i * 16;
           f[o] = r.x0 + 2.5 + Math.random() * (r.x1 - r.x0 - 5);
           f[o + 1] = r.y0 + 1.6 + Math.random() * 2;
-          f[o + 2] = 0; f[o + 3] = 0.05;
+          f[o + 2] = 0; f[o + 3] = 0.3;
           f[o + 11] = 0.05 + Math.random() * 1.5;
         }
       }
@@ -476,8 +477,10 @@ export class Engine {
     const g = Math.hypot(physics.gravityX, physics.gravityY);
     physics.gravityX = this.gravity[0] * g; physics.gravityY = this.gravity[1] * g;
     if (this.impulse[2] > 0) {
-      physics.gravityX += this.impulse[0] * g * 1.1; physics.gravityY += this.impulse[1] * g * 1.1;
-      this.impulse[2]--;
+      // a push lasts a fixed time, not a number of frames, so it is the same at any frame rate
+      const share = Math.min(1, this.impulse[2] / Math.max(dt, 1e-3));
+      physics.gravityX += this.impulse[0] * g * 1.1 * share; physics.gravityY += this.impulse[1] * g * 1.1 * share;
+      this.impulse[2] -= dt;
     }
     if (this.calm) physics.damping = Math.min(physics.damping, 0.9982);
     // once the liquid has all but stopped, damp what is left so the surface comes to a true rest
@@ -624,7 +627,7 @@ export class Engine {
     let alive = true;
     const loop = () => {
       if (!alive) return;
-      this.drawExtra(view, performance.now());
+      if (performance.now() - view.lastDraw > 6) this.drawExtra(view, performance.now());
       win.requestAnimationFrame(loop);
     };
     win.requestAnimationFrame(loop);
@@ -735,8 +738,9 @@ export class Engine {
     self.focused = document.hasFocus();
     for (const v of this.extraViews) {
       this.track(v);
-      // a picture-in-picture window can stop getting frames of its own; keep it drawn from here
-      if (now - v.lastDraw > 120) this.drawExtra(v, now);
+      // a picture-in-picture window's own frames can slow or stop; draw it from this loop too,
+      // whichever fires first
+      if (performance.now() - v.lastDraw > 6) this.drawExtra(v, now);
     }
     this.registry.announce();
     if (now - this.lastPrune > 400) { this.lastPrune = now; void this.registry.prune(); }

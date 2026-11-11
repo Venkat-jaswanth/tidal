@@ -2,7 +2,7 @@
 // self-recordings out of the pages, and measuring them with ffprobe.
 import { chromium } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export const BASE = process.env.TIDAL_URL ?? 'http://localhost:5174';
@@ -20,7 +20,7 @@ export async function launch(extraArgs = []) {
 
 export function watch(page, name, errors) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
+  page.on('pageerror', (e) => errors.push(`[pageerror] ${name}: ${e}`));
 }
 
 /** Moves and sizes a page's window (outer bounds, screen CSS px) through CDP. */
@@ -95,22 +95,31 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- scenes
 
-/** Tidal window URL for capture: `?capture` loads the recorder; `tier=0` keeps full quality (no automatic ladder mid-film). */
-export const TIDAL = `${BASE}/?capture&tier=0`;
+/**
+ * Tidal page URL for capture. `capture` loads the recorder; `nokeys` makes the page ignore the keyboard
+ * (headed windows here can catch keystrokes typed elsewhere: L changes the liquid, S the sound, arrows
+ * slosh); `tier=0` keeps full quality (no automatic quality ladder mid-film); `inactive` opens it sitting
+ * out of the world.
+ */
+export const tidalUrl = ({ inactive = false } = {}) => `${BASE}/?capture&nokeys&tier=0${inactive ? '&inactive' : ''}`;
+export const STAGE_URL = `${BASE}/?stage&capture&nokeys`;
+
+/** A take that must be thrown away, with the reason. */
+export class Problem extends Error {}
 
 /**
- * Opens the main Tidal page on the display Chrome starts on, inside its work area, and waits until it
- * leads the world. Returns { main, area }.
+ * Opens the main Tidal page on the display to film on, top left of its work area and clear of every
+ * vessel in the clips (the new world pours into it first, and that litre must not already sit inside a
+ * vessel). Returns { main, area }.
  */
 export async function openMain(context, errors, { width = 620, height = 420 } = {}) {
   const main = await context.newPage();
   watch(main, 'main', errors);
   await main.goto('about:blank');
   const screen = await pickDisplay(context, main);
-  // top left, clear of every vessel in the clips: the litre it starts with must not already sit inside one
   await setBounds(context, main, { left: screen.x, top: screen.y, width, height });
-  await main.goto(TIDAL);
-  await main.waitForFunction(() => window.tidal?.stats.particles > 0 && window.tidalApp && window.tidalCapture, null, { timeout: 30000 });
+  await main.goto(tidalUrl());
+  await main.waitForFunction(() => window.tidal?.stats.particles > 0 && window.tidalApp?.sitOut && window.tidalCapture, null, { timeout: 30000 });
   const area = await workArea(main);
   return { main, area };
 }
@@ -148,50 +157,231 @@ export function stalls(meta, from, to) {
   return { frames: L.length, over25: gaps.filter((g) => g > 25).length, over40: gaps.filter((g) => g > 40).length, worst: Math.round(Math.max(0, ...gaps)), missed: Math.round(gaps.reduce((a, g) => a + Math.max(0, Math.round(g / 16.667) - 1), 0)) };
 }
 
-/** Takes the main window out of the world for good: it holds no water (Perform and Stage do the same while they run). */
-export const sitOut = (page) => page.evaluate(() => {
-  const e = window.tidal;
-  const set = e.setActive.bind(e);
-  e.setActive = () => set(false);
-  set(false);
+/** Keyboard guard for pages `?nokeys` does not reach: the stage backdrop and the floating tank's document. */
+export const guardKeys = (page) => page.evaluate(() => {
+  for (const type of ['keydown', 'keyup', 'keypress']) addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
 });
 
-/** Keeps a vessel out of the world until `open(page)`. */
-export const gate = (page) => page.evaluate(() => {
-  const e = window.tidal;
-  const set = e.setActive.bind(e);
-  window.__gate = false;
-  e.setActive = (a) => set(a && window.__gate);
-  set(false);
-});
+/** The stage backdrop, filling the work area. It keeps the desktop out of sight while filming; the composite redraws its look. */
+export async function openStage(context, main, area, errors) {
+  const stage = await openPopup(context, main, STAGE_URL, { left: area.x, top: area.y, width: area.w, height: area.h, name: 'tidal-stage' });
+  watch(stage, 'stage', errors);
+  await stage.waitForFunction(() => document.documentElement.dataset.stage === 'yes');
+  await guardKeys(stage);
+  return stage;
+}
 
-export async function openVessel(context, opener, { x, y, w, h }, name, errors, titleBar = 67) {
-  const p = await openPopup(context, opener, TIDAL, { left: x, top: y, width: w, height: h - titleBar, name });
+/** Takes a window out of the world, or puts it back, through the app's supported switch. */
+export const sitOut = (page, out = true) => page.evaluate((o) => window.tidalApp.sitOut(o), out);
+
+/** Opens a vessel popup with this outer rectangle and waits until it is drawn, at exactly that rectangle. */
+export async function openVessel(context, opener, { x, y, w, h }, name, errors, { inactive = false, titleBar = 67 } = {}) {
+  const p = await openPopup(context, opener, tidalUrl({ inactive }), { left: x, top: y, width: w, height: h - titleBar, name });
   if (errors) watch(p, name, errors);
-  await p.waitForFunction(() => window.tidal?.stats.fps > 0 && window.tidalCapture && window.tidal.meta, null, { timeout: 30000 });
-  // window.open can land a pixel short; settle on the exact outer size
+  await p.waitForFunction(() => window.tidal?.stats.fps > 0 && window.tidalCapture && window.tidalApp && window.tidal.meta, null, { timeout: 30000 });
+  // window.open can land a pixel short; settle on the exact outer rectangle
   await p.evaluate(([x, y, w, h]) => { resizeTo(w, h); moveTo(x, y); }, [x, y, w, h]);
-  await p.waitForFunction(([w, h]) => outerWidth === w && outerHeight === h, [w, h], { timeout: 5000 }).catch(() => {});
+  await reach(p, name, { x, y, w, h });
   return p;
 }
 
-/** Waits until a vessel's liquid has been still for `quietMs` (and at least `minMs` in all). */
-export async function settle(page, { minMs = 4000, quietMs = 1500, maxMs = 20000 } = {}) {
-  const t = Date.now();
-  let quietSince = null;
-  for (;;) {
-    const s = await page.evaluate(() => ({ e: window.tidal.meta?.energy[window.tidal.slot] ?? 1, ml: window.tidal.ml }));
-    const now = Date.now();
-    if (s.e < 3e-5) quietSince ??= now; else quietSince = null;
-    if (now - t >= minMs && quietSince && now - quietSince >= quietMs) return { ...s, ms: now - t };
-    if (now - t > maxMs) return { ...s, ms: now - t, timeout: true };
-    await sleep(200);
+/** Waits until a window stands at this outer rectangle; a Problem if it never gets there. */
+export async function reach(page, name, { x, y, w, h }, timeout = 4000) {
+  const ok = await page.waitForFunction(([x, y, w, h]) => screenX === x && screenY === y && (w == null || outerWidth === w) && (h == null || outerHeight === h), [x, y, w ?? null, h ?? null], { timeout }).then(() => true, () => false);
+  if (!ok) {
+    const got = await page.evaluate(() => [screenX, screenY, outerWidth, outerHeight]);
+    throw new Problem(`${name} never reached its place: wanted ${x},${y} ${w ?? '?'}×${h ?? '?'}, got ${got[0]},${got[1]} ${got[2]}×${got[3]}`);
   }
 }
+
+/** Waits until nothing is raining (the new world's pour-in, or a sit-out) and then `afterMs` more, so the solver comes to rest. */
+export async function waitForRest(main, { afterMs = 6000, maxMs = 30000 } = {}) {
+  const t = Date.now();
+  await main.waitForFunction(() => (window.tidal.meta?.rainMl ?? 1) < 1, null, { timeout: maxMs, polling: 100 });
+  await sleep(afterMs);
+  return { ms: Date.now() - t, ...(await main.evaluate(() => ({ ml: window.tidal.meta.ml.map((v) => Math.round(v * 100) / 100).filter((v) => v > 0), energy: window.tidal.meta.energy.reduce((a, b) => a + b, 0) }))) };
+}
+
+/** Starts logging the world's total volume in the leader every 100 ms; `readVolumes` returns the samples. */
+export const logVolumes = (main) => main.evaluate(() => {
+  window.__volumes = [];
+  window.__volumeTimer = setInterval(() => {
+    const m = window.tidal.meta;
+    if (m) window.__volumes.push({ t: performance.timeOrigin + performance.now(), total: m.ml.reduce((a, b) => a + b, 0) + m.rainMl, rain: m.rainMl, ml: m.ml.slice(0, 6) });
+  }, 100);
+});
+export const readVolumes = (main) => main.evaluate(() => { clearInterval(window.__volumeTimer); return window.__volumes; });
 
 export const clockOf = (page) => page.evaluate(() => performance.timeOrigin + performance.now());
 
 export function writeJob(dir, job) {
   writeFileSync(`${dir}/job.json`, JSON.stringify(job, null, 1));
   return `${dir}/job.json`;
+}
+
+// ---------------------------------------------------------------- checks
+
+const secs = (t, t0) => `${((t - t0) / 1000).toFixed(2)} s`;
+
+/**
+ * One window's log over [from, to]: the worst gap between drawn frames (a stall over `limit` ms is a
+ * problem), and the liquid and sound state, which must stay as expected throughout.
+ */
+export function checkLog(id, meta, { from, to, t0, liquid, sound, limit = 60 }) {
+  const L = meta.log.filter((e) => e.t >= from && e.t <= to);
+  const problems = [];
+  if (L.length < 2) return { problems: [`${id}: no frames logged between ${secs(from, t0)} and ${secs(to, t0)}`], worst: Infinity };
+  let worst = 0, at = from;
+  for (let i = 1; i < L.length; i++) { const g = L[i].t - L[i - 1].t; if (g > worst) { worst = g; at = L[i].t; } }
+  if (worst > limit) problems.push(`${id}: a ${Math.round(worst)} ms stall at ${secs(at, t0)} (limit ${limit} ms)`);
+  // a steady low rate has no single long gap: count the frames too
+  const fps = ((L.length - 1) * 1000) / (L[L.length - 1].t - L[0].t);
+  if (limit !== Infinity && fps < 54) problems.push(`${id}: drew only ${fps.toFixed(1)} frames a second between ${secs(from, t0)} and ${secs(to, t0)} (54 at least)`);
+  if (liquid) {
+    const odd = L.find((e) => e.liquid !== undefined && e.liquid !== liquid);
+    if (odd) problems.push(`${id}: the liquid changed to "${odd.liquid}" at ${secs(odd.t, t0)} (expected ${liquid} throughout)`);
+  }
+  if (sound !== undefined) {
+    const odd = L.find((e) => (e.sound !== undefined && e.sound !== sound) || (e.soundShown !== undefined && e.soundShown !== sound));
+    if (odd) problems.push(`${id}: the sound was ${odd.sound ? 'on' : 'off'} (shown ${odd.soundShown ? 'on' : 'off'}) at ${secs(odd.t, t0)}, expected ${sound ? 'on' : 'off'} throughout`);
+  }
+  return { problems, worst: Math.round(worst), fps: Math.round(fps * 10) / 10 };
+}
+
+/** Hold segments of a sampled pose track ([{ t, x, y, w, h }], clock ms): stretches at least `minMs` long where the pose does not change. */
+export function holdsOf(samples, minMs = 250) {
+  const holds = [];
+  let i = 0;
+  while (i < samples.length) {
+    let j = i;
+    const a = samples[i];
+    while (j + 1 < samples.length && samples[j + 1].x === a.x && samples[j + 1].y === a.y && samples[j + 1].w === a.w && samples[j + 1].h === a.h) j++;
+    if (samples[j].t - a.t >= minMs) holds.push({ from: a.t, to: samples[j].t, x: a.x, y: a.y, w: a.w, h: a.h });
+    i = j + 1;
+  }
+  return holds;
+}
+
+/** Every frame from 120 ms into each hold to its end must show the window at the hold's outer rectangle (±2 px). */
+export function checkHolds(id, meta, holds, t0) {
+  const problems = [];
+  for (const h of holds) {
+    const L = meta.log.filter((e) => e.t >= h.from + 120 && e.t <= h.to);
+    if (!L.length) { problems.push(`${id}: no frames logged during its hold from ${secs(h.from, t0)}`); continue; }
+    const bad = L.find((e) => Math.abs(e.outer.x - h.x) > 2 || Math.abs(e.outer.y - h.y) > 2 || (h.w && Math.abs(e.outer.w - h.w) > 1) || (h.h && Math.abs(e.outer.h - h.h) > 1));
+    if (bad) problems.push(`${id}: not at its pose at ${secs(bad.t, t0)}: wanted ${h.x},${h.y} ${h.w ?? '?'}×${h.h ?? '?'}, was ${bad.outer.x},${bad.outer.y} ${bad.outer.w}×${bad.outer.h}`);
+  }
+  return problems;
+}
+
+/** The litre must stay a litre: every sample of (all vessels + rain in flight) within 0.5 % of 1000 mL. */
+export function checkVolume(samples, from, to, t0) {
+  const S = samples.filter((v) => v.t >= from && v.t <= to);
+  if (!S.length) return [`volume: no samples between ${secs(from, t0)} and ${secs(to, t0)}`];
+  const worst = S.reduce((a, v) => (Math.abs(v.total - 1000) > Math.abs(a.total - 1000) ? v : a));
+  return Math.abs(worst.total - 1000) > 5 ? [`volume: the world held ${worst.total.toFixed(1)} mL at ${secs(worst.t, t0)} (1000 mL ± 0.5 % expected)`] : [];
+}
+
+/** Facts of an encoded output, and problems if it is not 1920×1080 at 60 fps, the right length, with or without sound as asked. */
+export function checkOutput(file, { min, max, audio, width = 1920, height = 1080 }) {
+  const j = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_entries', 'stream=codec_type,codec_name,width,height,r_frame_rate,nb_read_frames', '-show_entries', 'format=duration,size', '-of', 'json', file]).toString());
+  const v = j.streams.find((s) => s.codec_type === 'video');
+  const a = j.streams.find((s) => s.codec_type === 'audio');
+  const duration = Number(j.format.duration);
+  const facts = { file: file.replace(ROOT, ''), codec: v?.codec_name, width: v?.width, height: v?.height, fps: v?.r_frame_rate, frames: Number(v?.nb_read_frames), duration, bytes: Number(j.format.size), audio: !!a };
+  const problems = [];
+  if (!v || v.width !== width || v.height !== height) problems.push(`${facts.file}: ${v?.width}×${v?.height}, expected ${width}×${height}`);
+  if (v?.r_frame_rate !== '60/1') problems.push(`${facts.file}: ${v?.r_frame_rate} fps, expected 60/1`);
+  if (Math.abs(facts.frames - Math.round(duration * 60)) > 1) problems.push(`${facts.file}: ${facts.frames} frames for ${duration} s at 60 fps`);
+  if (duration < min || duration > max) problems.push(`${facts.file}: ${duration} s long, expected ${min}–${max} s`);
+  if (audio !== undefined && facts.audio !== audio) problems.push(`${facts.file}: ${facts.audio ? 'has' : 'has no'} sound, expected ${audio ? 'sound' : 'none'}`);
+  return { facts, problems };
+}
+
+/**
+ * Runs a take up to `attempts` times, each in a fresh browser, until its checks pass, and returns what
+ * the passing take returned. `take` returns { problems: string[], ... } or throws a Problem. When no take
+ * passes, prints why and exits the process non-zero.
+ */
+export async function shoot(name, take, { attempts = Number(process.env.CAPTURE_ATTEMPTS ?? 3) } = {}) {
+  const rejected = [];
+  for (let a = 1; a <= attempts; a++) {
+    console.log(`== ${name}: take ${a} of ${attempts}`);
+    const errors = [];
+    const { browser, context } = await launch();
+    let r;
+    try {
+      r = await take({ context, errors, attempt: a });
+    } catch (e) {
+      // a bad take is retried; a bug in the script is not
+      if (!(e instanceof Problem) && e?.name !== 'TimeoutError') {
+        await browser.close().catch(() => {});
+        console.error(`\n${name}: FAILED, script error:\n${e?.stack ?? e}`);
+        process.exit(2);
+      }
+      r = { problems: [e.message] };
+    } finally {
+      await browser.close().catch(() => {});
+    }
+    const crashes = errors.filter((m) => m.includes('[pageerror]'));
+    const problems = [...(r.problems ?? []), ...crashes.map((m) => `page error: ${m}`)];
+    const noise = errors.filter((m) => !m.includes('[pageerror]') && !/favicon|status of 404/.test(m));
+    if (noise.length) console.log(`  console errors (not fatal): ${[...new Set(noise)].slice(0, 4).join(' | ')}`);
+    if (!problems.length) return { ...r, attempts: a, rejected };
+    rejected.push({ take: a, problems });
+    console.log(`  take ${a} rejected:\n    - ${problems.join('\n    - ')}`);
+  }
+  console.error(`\n${name}: FAILED, no good take in ${attempts} attempts. Last reasons:\n  - ${rejected[rejected.length - 1].problems.join('\n  - ')}`);
+  process.exit(1);
+}
+
+/** The take recorded by the last run of a clip script (for `--compose-only`: compose again without shooting). */
+export function lastTake(dir) {
+  let tj;
+  try { tj = JSON.parse(readFileSync(`${dir}/take.json`, 'utf8')); } catch { tj = null; }
+  if (!tj || !existsSync(`${dir}/job.json`)) {
+    console.error(`--compose-only: no recorded take in ${dir}; shoot it first`);
+    process.exit(1);
+  }
+  return { worst: tj.worstStallMs, attempts: tj.attempts, rejected: tj.rejected ?? [] };
+}
+
+/** Ends a clip script: writes take.json for all.mjs, prints the outcome, exits non-zero on any problem. */
+export function finish(dir, name, summary, problems) {
+  writeFileSync(`${dir}/take.json`, JSON.stringify({ name, ok: !problems.length, problems, ...summary }, null, 1));
+  if (problems.length) {
+    console.error(`\n${name}: FAILED\n  - ${problems.join('\n  - ')}`);
+    process.exit(1);
+  }
+  console.log(`\n${name}: OK ${JSON.stringify(summary.output ?? {})}`);
+}
+
+// ---------------------------------------------------------------- pictures
+
+const gray = (file, vf) => execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-i', file, '-vf', `${vf},format=gray`, '-frames:v', '1', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 26 });
+
+/**
+ * How far the compositor's redrawn labels are from the page itself: mean absolute luma difference (0–255)
+ * between a screenshot of the page and the same window cut out of a composed still, over the window's
+ * top `rows` px, where the labels are. The liquid must be at rest when the screenshot is taken.
+ */
+export function labelDiff(pagePng, composedPng, { x, y, w, rows = 140 }) {
+  const a = gray(pagePng, `crop=${w}:${rows}:0:0`);
+  const b = gray(composedPng, `crop=${w}:${rows}:${x}:${y}`);
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
+}
+
+/** Share of a frame region (at `t` s) that reads as cadmium orange and as ultramarine. */
+export function inkShares(file, t, { x, y, w, h }) {
+  const rgb = execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-ss', String(t), '-i', file, '-vf', `crop=${w}:${h}:${x}:${y},format=rgb24`, '-frames:v', '1', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 26 });
+  let orange = 0, blue = 0;
+  const n = rgb.length / 3;
+  for (let i = 0; i < rgb.length; i += 3) {
+    const r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
+    if (r > 150 && r > g + 50 && r > b + 80) orange++;
+    else if (b > r + 40 && b > g + 25) blue++;
+  }
+  return { orange: orange / n, blue: blue / n };
 }

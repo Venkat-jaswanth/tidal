@@ -7,7 +7,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { matchRequested } from './compose.mjs';
-import { BASE, ROOT, launch, watch, setBounds, openPopup, workArea, saveCapture, probe, cleanDir, sleep } from './lib.mjs';
+import { BASE, ROOT, tidalUrl, STAGE_URL, launch, watch, setBounds, openPopup, workArea, saveCapture, probe, cleanDir, sleep } from './lib.mjs';
 
 const which = process.argv[2] ?? 'both';
 const kind = process.argv[3] === 'canvas' ? 'canvas' : 'tab';
@@ -76,11 +76,11 @@ async function load() {
   const main = await context.newPage();
   watch(main, 'main', errors);
   await setBounds(context, main, { left: -219, top: -1050, width: 1100, height: 800 });
-  await main.goto(`${BASE}/?capture`);
+  await main.goto(tidalUrl());
   await main.waitForFunction(() => window.tidal?.stats.particles > 0 && window.tidalApp && window.tidalCapture, null, { timeout: 30000 });
   const area = await workArea(main);
   console.log('work area', JSON.stringify(area));
-  const stage = await openPopup(context, main, `${BASE}/?stage&capture`, { left: area.x, top: area.y, width: area.w, height: area.h, name: 'stage' });
+  const stage = await openPopup(context, main, STAGE_URL, { left: area.x, top: area.y, width: area.w, height: area.h, name: 'stage' });
   watch(stage, 'stage', errors);
   await stage.waitForFunction(() => window.tidalCapture && document.documentElement.dataset.stage === 'yes');
   const big = { w: 560, h: 520 }, small = { w: 330, h: 330 };
@@ -92,7 +92,7 @@ async function load() {
   ];
   const vessels = [];
   for (const [i, s] of specs.entries()) {
-    const p = await openPopup(context, main, `${BASE}/?capture`, { ...s, name: `v${i}` });
+    const p = await openPopup(context, main, tidalUrl(), { ...s, name: `v${i}` });
     watch(p, `v${i}`, errors);
     await p.waitForFunction(() => window.tidal?.stats.fps > 0 && window.tidalCapture, null, { timeout: 30000 });
     vessels.push(p);

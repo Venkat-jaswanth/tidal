@@ -7,7 +7,7 @@
 // latency is the measured delay from drawing to capture (tools/capture/experiment.mjs sync).
 import { chromium } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
 import { BASE, ROOT } from './lib.mjs';
 
@@ -118,35 +118,53 @@ export function buildJob(jobPath) {
     const logEnd = meta.log[meta.log.length - 1].t;
     const visibleFrom = Math.max(contentStart, w.visibleFrom ?? -Infinity);
     const visibleUntil = Math.min(w.visibleUntil ?? Infinity, logEnd, lastContent + 1000 / fps);
+    // Frames are drawn on the display's vsync, so a window's frame times keep one phase against the
+    // output's 60 fps grid. When that phase is near zero, "the last frame drawn at or before T" would
+    // flip on sub-millisecond jitter (a repeat, then a skip); then the nearest frame is taken instead,
+    // which moves the decision half a frame away from the frame times.
+    const P = 1000 / fps;
+    const inClip = valid.filter((c) => c >= raw.t0 && c <= raw.t0 + raw.duration * 1000);
+    const phases = inClip.map((c) => (((c - raw.t0) % P) + P) % P).map((v) => (v > P / 2 ? v - P : v)).sort((a, b) => a - b);
+    const phase = phases.length ? phases[phases.length >> 1] : 0;
+    const nearest = Math.abs(phase) < P / 4;
+    const slack = nearest ? P / 2 : 1e-3;
     const chosen = new Array(frames).fill(-1);
     let j = 0;
     for (let k = 0; k < frames; k++) {
       const T = raw.t0 + (k * 1000) / fps;
       if (T < visibleFrom || T > visibleUntil) continue;
-      // the last frame drawn at or before T (frames that answer no request are skipped)
-      while (j + 1 < content.length && !(content[j + 1] > T + 1e-3)) j++;
+      // the last frame drawn at or before T (+ slack; frames that answer no request are skipped)
+      while (j + 1 < content.length && !(content[j + 1] > T + slack)) j++;
       let i = j;
       while (i >= 0 && !Number.isFinite(content[i])) i--;
-      if (i >= 0 && content[i] <= T + 1e-3) chosen[k] = i;
+      if (i >= 0 && content[i] <= T + slack) chosen[k] = i;
     }
     const used = chosen.filter((p) => p >= 0);
+    // repeats the recording explains: output frames inside gaps where the page drew nothing new
+    let explained = 0;
+    for (let i = 1; i < valid.length; i++) {
+      if (valid[i] < visibleFrom || valid[i - 1] > Math.min(visibleUntil, raw.t0 + raw.duration * 1000)) continue;
+      explained += Math.max(0, Math.round((valid[i] - valid[i - 1]) / P) - 1);
+    }
     // seek targets: the middle of each chosen frame's display interval, robust to timestamp rounding
     const seekTo = chosen.map((i) => (i < 0 ? -1 : i + 1 < pts.length ? (pts[i] + pts[i + 1]) / 2 : pts[i] + 0.008));
     const shownPts = chosen.map((i) => (i < 0 ? -1 : pts[i]));
     const nextPts = chosen.map((i) => (i < 0 ? -1 : i + 1 < pts.length ? pts[i + 1] : pts[i] + 0.016));
     const distinct = new Set(used).size;
     windows.push({
-      id: w.id, kind: 'video', src: url(seekable), z: w.z ?? 0, titleBar: w.titleBar ?? null, dark: !!w.dark, fixedTitle: w.title ?? null, relabel: !!w.relabel,
+      id: w.id, kind: 'video', src: url(seekable), z: w.z ?? 0, titleBar: w.titleBar ?? null, dark: !!w.dark, fixedTitle: w.title ?? null,
       log: meta.log, texts: w.labels === false ? null : (meta.texts?.length ? meta.texts : null), frames: shownPts, seekTo, nextPts,
       visibleFrom, visibleUntil, dpr: meta.log[0]?.dpr ?? 1,
-      report: { method: meta.requested?.length ? `requested (${pts.length} frames / ${meta.requested.length} requests)` : `startedAt-${latency}ms`, frames: used.length, distinctSourceFrames: distinct, repeated: used.length - distinct, visibleFrom: Math.round(visibleFrom - raw.t0), visibleUntil: Math.round(visibleUntil - raw.t0) },
+      report: { method: meta.requested?.length ? `requested (${pts.length} frames / ${meta.requested.length} requests)` : `startedAt-${latency}ms`, pick: `${nearest ? 'nearest' : 'latest'} (phase ${phase.toFixed(2)} ms)`, frames: used.length, distinctSourceFrames: distinct, repeated: used.length - distinct, explained, visibleFrom: Math.round(visibleFrom - raw.t0), visibleUntil: Math.round(visibleUntil - raw.t0) },
     });
   }
   return { name: raw.name, width: raw.width, height: raw.height, fps, frames, t0: raw.t0, map, background: raw.background ?? 'stage', stageGrid: raw.stageGrid ?? { x: area.x, y: area.y }, windows, audio: raw.audio ?? null, dir };
 }
 
 export async function compose(jobPath, outFile, first = 0, last = Infinity) {
+  mkdirSync(dirname(outFile), { recursive: true });
   const job = buildJob(jobPath);
+  const problems = [];
   const end = Math.min(job.frames - 1, last);
   for (const w of job.windows) if (w.report) console.log(`  ${w.id}: ${JSON.stringify(w.report)}`);
   const browser = await chromium.launch({ channel: 'chrome', headless: false, args: ['--window-size=1000,640', '--autoplay-policy=no-user-gesture-required'] });
@@ -162,7 +180,7 @@ export async function compose(jobPath, outFile, first = 0, last = Infinity) {
 
     if (outFile.endsWith('.png')) {
       writeFileSync(outFile, Buffer.from(await page.evaluate((i) => window.compose.frame(i), first), 'base64'));
-      return { job };
+      return { job, problems };
     }
     const args = ['-y', '-v', 'error', '-f', 'image2pipe', '-framerate', String(job.fps), '-c:v', 'png', '-i', '-'];
     const audio = job.audio;
@@ -190,8 +208,14 @@ export async function compose(jobPath, outFile, first = 0, last = Infinity) {
     await done;
     const stats = await page.evaluate(() => window.compose.stats());
     console.log(`  composed ${end - first + 1} frames in ${((Date.now() - t) / 1000).toFixed(0)} s; seek mismatches ${JSON.stringify(stats)}`);
+    // every repeated frame must be one the recording explains (the page drew nothing new), give or take two
+    for (const w of job.windows) {
+      if (w.report && w.report.repeated > w.report.explained + 2) problems.push(`${w.id}: the composite repeats ${w.report.repeated} frames, the recording explains ${w.report.explained}`);
+      const st = stats.find((x) => x.id === w.id);
+      if (st && st.mismatches > 3) problems.push(`${w.id}: ${st.mismatches} frames could not be seeked exactly`);
+    }
     if (errors.length) console.log('  page errors:', errors.slice(0, 5).join(' | '));
-    return { job, stats };
+    return { job, stats, problems };
   } finally {
     await browser.close();
   }

@@ -1,17 +1,21 @@
 // Ink mixing clip: two vessels on the stage, one ultramarine, one cadmium orange, pushed together; the
 // raised one pours into the other and the colours swirl. Composes launch/clips/ink-mix.mp4.
-// node tools/capture/ink.mjs [--no-compose]
-import { BASE, ROOT, launch, openMain, openPopup, openVessel, sitOut, settle, saveCapture, writeJob, clockOf, cleanDir, sleep, probe, stalls } from './lib.mjs';
+// node tools/capture/ink.mjs [--no-compose | --compose-only]          env CAPTURE_ATTEMPTS (default 3)
+import { ROOT, openMain, openStage, openVessel, sitOut, waitForRest, logVolumes, readVolumes, saveCapture, writeJob, clockOf, cleanDir, sleep, probe,
+  checkLog, checkHolds, checkVolume, checkOutput, inkShares, shoot, finish, lastTake } from './lib.mjs';
 import { compose } from './compose.mjs';
 
 const SECONDS = 7;
+const PUSH = [0.8, 0.6];     // starts at, lasts (s)
+const SHAKE = [3.6, 0.64];
 const dir = `${ROOT}launch/raw/ink-mix`;
-cleanDir(dir);
-const errors = [];
-const { browser, context } = await launch();
-try {
+const OUT = `${ROOT}launch/clips/ink-mix.mp4`;
+
+const take = process.argv.includes('--compose-only') ? lastTake(dir) : await shoot('ink-mix', async ({ context, errors }) => {
+  cleanDir(dir);
+  const problems = [];
   const { main, area } = await openMain(context, errors);
-  await openPopup(context, main, `${BASE}/?stage&capture`, { left: area.x, top: area.y, width: area.w, height: area.h, name: 'tidal-stage' });
+  await openStage(context, main, area, errors);
   const floor = area.y + area.h;
   // L stands on the floor; R is smaller and stands 140 px higher, so when they touch R pours into L
   const L = { x: area.x + 520, y: floor - 420, w: 460, h: 420 };
@@ -19,18 +23,21 @@ try {
   const rTouch = area.x + 980;
   const left = await openVessel(context, main, L, 'L', errors);
   const right = await openVessel(context, main, R, 'R', errors);
-  await sitOut(main); // the main window's litre rains into the two, shared by width
-  const rest = await settle(left, { minMs: 6000 });
-  await settle(right, { minMs: 0 });
+  await sitOut(main, true); // the main window's litre rains into the two, shared by width
+  await waitForRest(main, { afterMs: 3000 });
   await main.evaluate(() => window.tidal.command({ type: 'cmd', cmd: 'liquid', value: 'ink' }));
-  await settle(left, { minMs: 2500, quietMs: 1000 });
-  console.log('filled', JSON.stringify(rest), JSON.stringify(await Promise.all([left, right].map((p) => p.evaluate(() => ({ slot: window.tidal.slot, ml: Math.round(window.tidal.ml), liquid: window.tidal.liquid.id }))))));
+  await sleep(3000);
+  const filled = await Promise.all([left, right].map((p) => p.evaluate(() => ({ slot: window.tidal.slot, ml: Math.round(window.tidal.ml), liquid: window.tidal.liquid.id }))));
+  console.log('filled', JSON.stringify(filled));
+  if (filled.some((f) => f.ml < 300)) problems.push(`a vessel holds too little to show its ink before they meet: ${JSON.stringify(filled)}`);
 
   for (const p of [left, right]) await p.evaluate(() => window.tidalCapture.start('canvas'));
+  await logVolumes(main);
   await sleep(400);
   const t0 = (await clockOf(main)) + 300;
-  // R moves itself: a 0.6 s push into contact at 0.8 s, then a small vertical shake at 3.6 s
-  await right.evaluate(([t0, x0, x1, y]) => {
+  const t1 = t0 + SECONDS * 1000;
+  // R moves itself: a push into contact, then a small vertical shake that keeps the edge in contact
+  await right.evaluate(([t0, x0, x1, y, push, shake]) => {
     const now = () => performance.timeOrigin + performance.now();
     const ease = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
     const run = (start, ms, fn) => {
@@ -41,23 +48,53 @@ try {
       };
       requestAnimationFrame(step);
     };
-    run(t0 + 800, 600, (u) => moveTo(Math.round(x0 + (x1 - x0) * ease(u)), y));
-    run(t0 + 3600, 640, (u) => moveTo(x1, Math.round(y + 16 * Math.sin(u * Math.PI * 6) * (1 - u))));
-  }, [t0, R.x, rTouch, R.y]);
-  while ((await clockOf(main)) < t0 + (SECONDS + 0.4) * 1000) await sleep(250);
-  console.log('end', JSON.stringify(await Promise.all([left, right].map((p) => p.evaluate(() => ({ ml: Math.round(window.tidal.ml), outer: [screenX, screenY] }))))));
+    run(t0 + push[0] * 1000, push[1] * 1000, (u) => moveTo(Math.round(x0 + (x1 - x0) * ease(u)), y));
+    run(t0 + shake[0] * 1000, shake[1] * 1000, (u) => moveTo(x1, Math.round(y + 16 * Math.sin(u * Math.PI * 6) * (1 - u))));
+  }, [t0, R.x, rTouch, R.y, PUSH, SHAKE]);
+  while ((await clockOf(main)) < t1 + 400) await sleep(250);
+  const volumes = await readVolumes(main);
+  const caps = {};
+  for (const [id, p] of [['L', left], ['R', right]]) caps[id] = await saveCapture(p, `${dir}/${id}`);
 
-  for (const [id, p] of [['L', left], ['R', right]]) {
-    const c = await saveCapture(p, `${dir}/${id}`);
-    console.log(id, JSON.stringify(probe(c.file)), 'in clip', JSON.stringify(stalls(c.meta, t0, t0 + SECONDS * 1000)));
-  }
+  // ---- checks
+  const want = { t0, from: t0, to: t1, liquid: 'ink', sound: false };
+  const logs = Object.fromEntries(Object.entries(caps).map(([id, c]) => [id, checkLog(id, c.meta, want)]));
+  for (const l of Object.values(logs)) problems.push(...l.problems);
+  const at = (s) => t0 + s * 1000;
+  problems.push(...checkHolds('L', caps.L.meta, [{ from: t0, to: t1, ...L }], t0));
+  problems.push(...checkHolds('R', caps.R.meta, [
+    { from: t0, to: at(PUSH[0]), ...R },
+    { from: at(PUSH[0] + PUSH[1]), to: at(SHAKE[0]), ...R, x: rTouch },
+    { from: at(SHAKE[0] + SHAKE[1]), to: t1, ...R, x: rTouch },
+  ], t0));
+  problems.push(...checkVolume(volumes, t0 - 500, t1, t0));
+  for (const [id, c] of Object.entries(caps)) console.log(id, JSON.stringify(probe(c.file)), 'worst stall in clip', logs[id].worst, 'ms');
   writeJob(dir, {
     name: 'ink-mix', width: 1920, height: 1080, fps: 60, t0, duration: SECONDS,
     area, background: 'stage', stageGrid: { x: area.x, y: area.y + 67 },
     windows: [{ id: 'L', z: 0 }, { id: 'R', z: 1 }],
+    regions: { L: { x: L.x - area.x, y: L.y + 67 - area.y + Math.round((1080 - area.h) / 2), w: L.w, h: L.h - 67 }, R: { x: R.x - area.x, y: R.y + 67 - area.y + Math.round((1080 - area.h) / 2), w: R.w, h: R.h - 67 } },
   });
-} finally {
-  await browser.close();
+  return { problems, worst: Math.max(...Object.values(logs).map((l) => l.worst)) };
+});
+
+if (process.argv.includes('--no-compose')) process.exit(0);
+const composed = await compose(`${dir}/job.json`, OUT);
+const out = checkOutput(OUT, { min: 5, max: 8, audio: false });
+const problems = [...composed.problems, ...out.problems];
+// the colours must read on film: one vessel orange and one blue before they meet, then both colours
+// swirling in the vessel that receives the pour for at least 3 s
+const { regions } = (await import(`${dir}/job.json`, { with: { type: 'json' } })).default;
+const lower = (r, f = 0.55) => ({ x: r.x + 4, y: r.y + Math.round(r.h * (1 - f)), w: r.w - 8, h: Math.round(r.h * f) - 4 });
+const before = { L: inkShares(OUT, 0.5, lower(regions.L)), R: inkShares(OUT, 0.5, lower(regions.R)) };
+const solo = (s) => (s.orange > 0.3 && s.blue < 0.05 ? 'orange' : s.blue > 0.3 && s.orange < 0.05 ? 'blue' : 'mixed');
+console.log('before they meet:', JSON.stringify(before));
+if (new Set([solo(before.L), solo(before.R)]).size !== 2 || solo(before.L) === 'mixed' || solo(before.R) === 'mixed') problems.push(`before they meet the two vessels are not one orange and one blue: ${JSON.stringify(before)}`);
+const swirl = [];
+for (const s of [2.0, 3.0, 4.0, 5.0]) {
+  const v = inkShares(OUT, s, lower(regions.L, 0.8));
+  swirl.push({ s, ...v });
+  if (v.orange < 0.02 || v.blue < 0.02) problems.push(`no visible swirl in L at ${s} s (orange ${(v.orange * 100).toFixed(1)} %, blue ${(v.blue * 100).toFixed(1)} %)`);
 }
-if (errors.length) console.log('PAGE ERRORS\n' + [...new Set(errors)].slice(0, 10).join('\n'));
-if (!process.argv.includes('--no-compose')) await compose(`${dir}/job.json`, `${ROOT}launch/clips/ink-mix.mp4`);
+console.log('swirl in L:', JSON.stringify(swirl.map((v) => ({ s: v.s, orange: Math.round(v.orange * 100), blue: Math.round(v.blue * 100) }))));
+finish(dir, 'ink-mix', { output: out.facts, worstStallMs: take.worst, attempts: take.attempts, rejected: take.rejected, inks: { before, swirl } }, problems);

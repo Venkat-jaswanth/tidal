@@ -72,7 +72,7 @@ fn localOf(world: vec2f) -> vec2f { return world - u.viewOrigin; }
 // How far the liquid climbs the glass at this distance from a side wall, px.
 fn climb(p: vec2f) -> f32 {
   let wall = max(min(p.x, u.viewSize.x - p.x), 0.0);
-  return u.optics2.x * exp(-wall / 8.0);
+  return u.optics2.x * exp(-wall / 11.0);
 }
 
 // The field with the vessel's wetting applied: the liquid reaches the glass and climbs it in a concave meniscus.
@@ -119,7 +119,9 @@ fn graduations(p: vec2f) -> f32 {
   let major = step(abs(nearest / u.tickMajor - round(nearest / u.tickMajor)), 0.01);
   let len = mix(8.0, 17.0, major);
   let line = 1.0 - smoothstep(0.35, 0.85, d);
-  return line * step(p.x, len) * step(1.5, p.x) * step(p.y, u.viewSize.y - 2.0);
+  // the ladder starts below the label stack (quiet zone 0), so no unnumbered ticks run up beside it
+  let below = step(u.quiet[0].w + 10.0, p.y) + step(u.quiet[0].z, u.quiet[0].x);
+  return line * step(p.x, len) * step(1.5, p.x) * step(p.y, u.viewSize.y - 2.0) * min(below, 1.0);
 }
 
 // A sharp caustic network: the pattern light makes on a surface behind rippling water.
@@ -179,13 +181,13 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     let z = u.quiet[i];
     if (z.z <= z.x) { continue; }
     let dq = max(max(z.x - p.x, p.x - z.z), max(z.y - p.y, p.y - z.w));
-    quiet = max(quiet, 1.0 - smoothstep(-2.0, 7.0, dq));
+    quiet = max(quiet, 1.0 - smoothstep(-3.0, 16.0, dq));
   }
-  col = mix(col, u.paper.rgb + (vnoise(world * 0.9) - 0.5) * u.paperB.w, quiet * 0.92);
+  col = mix(col, u.paper.rgb + (vnoise(world * 0.9) - 0.5) * u.paperB.w, quiet * 0.88);
 
   if (inside > 0.0) {
     // Depth of liquid above this point, smoothed in both directions.
-    let es = 22.0;
+    let es = 30.0;
     let dl = wet(world - side * es).g;
     let dr = wet(world + side * es).g;
     let du = wet(world - u.gravity * es).g;
@@ -200,14 +202,14 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     // curved rim of the surface and of the meniscus bends it hardest; moving water makes it shimmer.
     let centre = u.viewOrigin + u.viewSize * 0.5;
     let lens = (world - centre) * (1.0 / u.optics.y - 1.0);
-    let prism = side * slope * 20.0 * (1.0 - exp(-depth / 40.0));
+    let prism = side * slope * 11.0 * (1.0 - exp(-depth / 40.0));
     let rim = exp(-max(sd, 0.0) / 7.0);
     let curve = n * rim * u.optics.x;
     let speed = clamp(f.a * 3.0, 0.0, 1.0);
     // the bend is smooth and bounded, so a refracted grid line can lean and bow but never fold back on itself
     var bend = prism + curve;
     let bl = length(bend);
-    if (bl > 16.0) { bend *= 16.0 / bl; }
+    if (bl > 10.0) { bend *= 10.0 / bl; }
     // seen through clear liquid the ruling is as crisp as in air; only fast water softens it
     let aa = aa0 / u.optics.y + speed * 0.5;
     // colour fringing only at the curved rim, where a real surface disperses light
@@ -230,7 +232,8 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
       let c2 = caustic(vec2f(cw.x * 0.8 - cw.y * 0.6, cw.x * 0.6 + cw.y * 0.8) / 113.0 * TAU + 2.0, u.time * 0.37 + 4.0);
       cau = smoothstep(0.1, 0.9, max(c1, c2 * 0.8));
     }
-    let lit = u.optics.w * cau * smoothstep(6.0, 70.0, depth) * (0.5 + 0.5 * exp(-depth / 300.0));
+    let lively = 0.3 + 0.7 * clamp(abs(rawSlope) * 2.5 + speed * 1.5, 0.0, 1.0);
+    let lit = u.optics.w * cau * lively * smoothstep(6.0, 70.0, depth) * (0.5 + 0.5 * exp(-depth / 300.0));
     seen = seen * (1.0 + lit * 0.07) + u.highlight.rgb * lit * (0.03 + 0.2 * u.optics2.w);
 
     // Beer-Lambert absorption along the column of liquid above: a pure multiply.
@@ -244,39 +247,33 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
       // pigment: a deep column is darker than a thin one
       bodyColour *= mix(1.0, 0.66, 1.0 - exp(-depth / 170.0));
     } else if (u.inkB.w < 0.0) {
-      // metal: a mirror. It shows the sheet above the surface, flipped about the surface and crisp;
-      // rims facing up catch the light and rims facing down go dark.
-      let rimf = exp(-max(sd, 0.0) / 11.0);
+      // metal: an opaque mirror. It shows the sheet above it flipped about the surface, soft and
+      // darkened; a hard band of light runs just inside the surface; edges facing the eye brighten.
+      let rimf = exp(-max(sd, 0.0) / 12.0);
       let up = -n.y;
-      // (only the major lines of the ruling survive in the reflection; the fine ones would shimmer)
-      let refl = paperAt(vec2f(world.x + slope * 34.0, world.y - 2.0 * depth - 8.0) + n * rimf * 30.0, 4.0);
-      let lines = smoothstep(0.01, 0.045, dot(u.paper.rgb, vec3f(0.333)) - dot(refl, vec3f(0.333)));
-      let deep = 1.0 - exp(-depth / 240.0);
-      var metal = mix(vec3f(0.93, 0.945, 0.96), vec3f(0.5, 0.53, 0.57), deep);
-      metal = mix(metal, metal * 0.55, lines * 0.5);
-      // a broad highlight along the convex top, then the rims
-      metal = mix(metal, vec3f(1.0), exp(-pow((sd - 7.0) / 5.0, 2.0)) * smoothstep(0.2, 0.9, up) * 0.75);
-      metal = mix(metal, vec3f(1.0), rimf * smoothstep(0.05, 0.8, up) * 0.6);
-      metal = mix(metal, vec3f(0.16, 0.17, 0.19), rimf * smoothstep(0.05, 0.8, -up) * 0.9);
-      metal = mix(metal, vec3f(0.24, 0.26, 0.29), rimf * (1.0 - abs(up)) * 0.6);
+      let refl = paperAt(vec2f(world.x + slope * 30.0, world.y - 2.0 * depth - 8.0) + n * rimf * 26.0, 9.0);
+      let deep = 1.0 - exp(-depth / 260.0);
+      var metal = refl * mix(vec3f(0.86, 0.885, 0.91), vec3f(0.56, 0.59, 0.64), deep);
+      // a broad soft sheen across the body, as a curved mirror shows of a bright room
+      metal += vec3f(0.1) * (0.5 + 0.5 * sin(world.x * 0.006 + slope * 2.0 + 1.3)) * (1.0 - deep);
+      metal = mix(metal, vec3f(1.0), exp(-pow((sd - 6.0) / 3.2, 2.0)) * smoothstep(0.15, 0.85, up) * 0.9);
+      metal = mix(metal, vec3f(0.93, 0.95, 0.97), rimf * rimf * smoothstep(0.0, 0.7, up) * 0.55);
+      metal = mix(metal, vec3f(0.14, 0.15, 0.17), rimf * smoothstep(0.05, 0.8, -up) * 0.9);
+      metal = mix(metal, vec3f(0.22, 0.24, 0.27), rimf * (1.0 - abs(up)) * 0.55);
       bodyColour = metal;
     }
+    bodyColour *= 1.0 - 0.3 * u.optics2.w * (1.0 - exp(-depth / 200.0));
     body = mix(body, bodyColour, clamp(opacity, 0.0, 1.0));
 
     // Caustics on the floor: in the last few px above the bottom edge the light the surface has
     // focused lands as sharp bright filaments that slide with the water above.
     let floorDist = u.viewSize.y - p.y;
-    let floorBand = 1.0 - smoothstep(7.0, 10.0, floorDist);
-    if (floorBand > 0.0 && u.quality.y > 0.5) {
-      let fx = world.x + 14.0 * slope;
-      let k1 = sin(fx * 0.09 + u.time * 0.9 + 2.4 * vnoise(vec2f(fx * 0.021, u.time * 0.35)));
-      let k2 = sin(fx * 0.053 - u.time * 0.6 + 3.1 * vnoise(vec2f(fx * 0.017 + 9.0, u.time * 0.27)));
-      let filament = pow(clamp(1.0 - abs(k1 + k2) * 0.75, 0.0, 1.0), 5.0);
-      let strength = u.optics.w * floorBand * smoothstep(8.0, 50.0, depth) * (1.0 - 0.55 * u.optics2.w);
-      body = mix(body, u.highlight.rgb, clamp(strength * (0.06 + 0.8 * filament), 0.0, 0.85));
+    let floorBand = exp(-floorDist / 34.0);
+    if (floorBand > 0.02 && u.quality.y > 0.5) {
+      // the same network of focused light as in the body, drawn sharp and bright where it lands
+      let strength = u.optics.w * floorBand * smoothstep(8.0, 50.0, depth) * (1.0 - 0.5 * u.optics2.w);
+      body = mix(body, u.highlight.rgb, clamp(strength * smoothstep(0.35, 0.95, cau) * 0.75, 0.0, 0.8));
     }
-    // the floor itself: a hairline where the glass base begins
-    body = mix(body, u.ink.rgb, (1.0 - smoothstep(0.3, 0.9, abs(floorDist - 10.5))) * 0.16 * (1.0 - u.optics2.w));
 
     // Seen from just below, the surface is a mirror: a narrow silvery band that squeezes the ruling.
     let bandWidth = 3.0 + 3.0 * clamp(abs(n.x) * 1.4, 0.0, 1.0);
@@ -284,7 +281,7 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     if (band > 0.003) {
       var squeezed = u.paper.rgb;
       if (u.quality.x > 0.5) { squeezed = paperAt(world + lens + n * sd * 2.5, aa * 1.5); }
-      body = mix(body, mix(squeezed, u.highlight.rgb, 0.12) * 0.985, band * 0.75);
+      body = mix(body, mix(squeezed, u.highlight.rgb, 0.1 + 0.3 * clamp(abs(n.x) * 1.3, 0.0, 1.0)), band * 0.8);
     }
 
     // The meniscus against the glass: a bright line hugging the wall and a thin darker lens beside it.
@@ -296,15 +293,20 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     // Foam and bubbles, only where the flow has been turbulent.
     let foam = clamp(f.b * u.optics2.z, 0.0, 1.0) * step(u.inkB.w, 0.5) * u.quality.z;
     if (foam > 0.02) {
-      // bubbles of trapped air: each a small disc with a graphite rim and a pinpoint of light,
-      // thinning out as the foam fades, under a soft froth where the water is breaking
+      // bubbles of trapped air, mostly tiny: a filled disc, darker at the rim, with a pinpoint of light
       let bub = discs(world, 6.5, foam * 0.55);
       let insideBub = 1.0 - smoothstep(-0.5, 0.4, bub.x);
-      let rimBub = 1.0 - smoothstep(0.0, 0.8, abs(bub.x + 0.45));
-      let froth = smoothstep(0.55, 1.0, foam) * (0.3 + 0.7 * vnoise(world * 0.8));
-      body = mix(body, u.highlight.rgb, clamp(insideBub * 0.4 * foam + froth * 0.4, 0.0, 0.85));
-      body = mix(body, u.ink.rgb, rimBub * 0.42 * min(1.0, foam * 2.0) * (1.0 - u.optics2.w));
-      body = mix(body, u.highlight.rgb, rimBub * 0.5 * min(1.0, foam * 2.0) * u.optics2.w);
+      let rimBub = insideBub * smoothstep(-1.4, -0.2, bub.x);
+      let glint = 1.0 - smoothstep(0.0, 0.9, length(vec2f(bub.x + bub.y * 0.6, 0.0)));
+      // froth where the water is breaking: a milky body, cool grey in its hollows so it reads on white paper
+      let grainy = vnoise(world * 0.55) * 0.6 + vnoise(world * 1.9) * 0.4;
+      let froth = smoothstep(0.45, 0.95, foam) * (0.45 + 0.55 * grainy);
+      let frothCol = mix(vec3f(0.74, 0.8, 0.82), vec3f(1.0), smoothstep(0.35, 0.8, grainy));
+      // on a dark field froth is light itself, so it needs far less of it
+      body = mix(body, mix(frothCol, u.highlight.rgb, u.optics2.w), clamp(froth * (0.7 - 0.9 * u.optics2.w), 0.0, 0.85));
+      body = mix(body, u.highlight.rgb, insideBub * (0.5 - 0.28 * u.optics2.w) * min(1.0, foam * 2.0));
+      body = mix(body, mix(vec3f(0.5, 0.57, 0.6), u.highlight.rgb, u.optics2.w), rimBub * 0.55 * min(1.0, foam * 2.0));
+      body = mix(body, u.highlight.rgb, glint * 0.6 * min(1.0, foam * 2.0));
     }
 
     // The edge of the liquid. No drawn outline: just inside the surface the liquid shows a darker
@@ -312,30 +314,34 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
     // faces the light and vanishes where it turns away, then a soft gloss on thick liquids.
     let upness = clamp(-dot(n, u.gravity), -1.0, 1.0);
     let facing = clamp(dot(n, normalize(vec2f(-0.45, -1.0))), 0.0, 1.0);
-    let rimDark = (1.0 - smoothstep(0.0, 3.5, sd)) * (0.05 + 0.12 * (1.0 - facing)) * (1.0 - u.optics2.w);
+    let rimDark = (1.0 - smoothstep(0.0, 3.0, sd)) * (0.09 + 0.14 * (1.0 - facing)) * (1.0 - u.optics2.w);
     body *= 1.0 - rimDark;
     body *= 1.0 - 0.05 * exp(-max(sd, 0.0) / 10.0) * (1.0 - u.optics2.w);
-    let calm = 1.0 - speed;
-    let hair = (1.0 - smoothstep(0.2, 0.8, abs(sd - 0.3))) * smoothstep(0.2, 0.7, upness) * calm;
-    body = mix(body, u.ink.rgb, hair * 0.13 * (1.0 - u.optics2.w));
+
     let specWidth = mix(0.4, 1.5, facing * facing);
-    let spec = (1.0 - smoothstep(specWidth * 0.5, specWidth * 0.5 + 0.7, abs(sd - 1.4 - specWidth * 0.5))) * (0.3 + 0.7 * facing);
+    let spec = (1.0 - smoothstep(specWidth * 0.5, specWidth * 0.5 + 0.7, abs(sd - 1.4 - specWidth * 0.5))) * (0.06 + 0.94 * facing * facing);
     body = mix(body, u.highlight.rgb, clamp(spec * u.highlight.a, 0.0, 1.0));
     let gloss = exp(-pow((sd - 8.0) / 4.5, 2.0)) * facing * u.tint.a * 0.35;
     body = mix(body, u.highlight.rgb, gloss);
 
     col = mix(col, body, inside);
   } else if (d > 0.04 && d < 0.42 && f.a > 0.1 && u.quality.z > 0.5 && u.optics2.z > 0.5) {
-    // Spray: liquid too thin to form a body is drawn as a few small drops, each a tiny lens.
+    // Spray and rain: liquid too thin to form a body is drawn as drops. The drops travel with the
+    // liquid (the pattern falls along gravity at the liquid's speed) and stretch along their fall.
     let apart = smoothstep(12.0, 20.0, -sd);
-    let drop = discs(world, 9.0, clamp(d * 1.1, 0.0, 0.6) * apart);
+    let fall = u.gravity * (u.time * (260.0 + 900.0 * f.a));
+    let along = dot(world - fall, u.gravity);
+    let across = dot(world, side);
+    let stretch = 1.0 + min(f.a * 5.0, 2.2);
+    let drop = discs(vec2f(across, along / stretch), 9.0, clamp(d * 1.3, 0.0, 0.6) * apart);
     if (drop.x < 0.75) {
       let cover = 1.0 - smoothstep(-0.75, 0.75, drop.x);
       let r = max(drop.y, 0.5);
       let t = clamp(-drop.x / r, 0.0, 1.0);          // 0 at the rim, 1 at the centre
-      // a drop shows the paper upside down, darker towards its rim, with one small glint
-      var lensed = paperAt(world + vec2f(0.0, r * 2.4) * (1.0 - t), aa0 * 2.0) * mix(vec3f(0.8, 0.85, 0.87), vec3f(0.98), smoothstep(0.0, 0.8, t));
-      lensed = mix(lensed, u.highlight.rgb, smoothstep(0.72, 0.95, t) * 0.7);
+      // a drop shows the paper upside down, a little darker towards its rim, with a crescent of light on one side
+      var lensed = paperAt(world + vec2f(0.0, r * 2.4) * (1.0 - t), aa0 * 2.0) * mix(vec3f(0.84, 0.88, 0.9), vec3f(0.99), smoothstep(0.0, 0.8, t));
+      lensed = mix(lensed, u.highlight.rgb, smoothstep(0.55, 0.95, t) * 0.75);
+      lensed = mix(lensed, max(lensed, u.paper.rgb) + u.highlight.rgb * 0.3, u.optics2.w);
       col = mix(col, lensed, cover);
     }
   }
@@ -347,7 +353,7 @@ fn discs(world: vec2f, cell: f32, amount: f32) -> vec3f {
   col = mix(col, u.highlight.rgb, inner * (1.0 - u.optics2.w));
   // a faint vertical reflection down the right-hand wall of the glass
   let fromRight = u.viewSize.x - p.x;
-  col = mix(col, u.highlight.rgb, (1.0 - smoothstep(3.5, 5.0, abs(fromRight - 12.0))) * 0.07 * (1.0 - 0.5 * u.optics2.w));
+  col = mix(col, u.highlight.rgb, (1.0 - smoothstep(3.5, 5.0, abs(fromRight - 12.0))) * 0.035 * (1.0 - 0.5 * u.optics2.w) * (1.0 - inside));
   col = mix(col, u.ink.rgb, max(graduations(p), outer * 0.8) * u.ink.a);
   col += u.optics2.w * u.ink.rgb * graduations(p) * 0.45;
 

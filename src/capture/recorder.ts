@@ -46,6 +46,10 @@ export interface LogEntry {
   /** This vessel's volume and slot, when the window holds one. */
   ml?: number;
   slot?: number;
+  /** The world's liquid and this window's sound switch (as the audio engine and as the Sound control show it), so a take can prove neither changed. */
+  liquid?: string;
+  sound?: boolean;
+  soundShown?: boolean;
 }
 
 /** One run of HTML text, for the compositor to redraw over a canvas-only recording. */
@@ -297,6 +301,11 @@ class Recording {
       };
       if (this.ml) { entry.ml = this.ml(); if (this.slotOf) entry.slot = this.slotOf(); }
       else if (window.tidal && v === window) { entry.ml = window.tidal.ml; entry.slot = window.tidal.slot; }
+      if (window.tidal) entry.liquid = window.tidal.liquid.id;
+      if (window.tidalApp) {
+        entry.sound = window.tidalApp.audio.enabled;
+        entry.soundShown = document.querySelector('.tc button[aria-pressed]')?.getAttribute('aria-pressed') === 'true';
+      }
       this.log.push(entry);
       if (this.withTexts && textsDirty) {
         textsDirty = false;

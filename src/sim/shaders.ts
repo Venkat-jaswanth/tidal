@@ -218,8 +218,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // Foam: made where the flow is fast and rotating, then lingers and fades over about half a second.
   let gw = i32(P.grid.x);
   let curl = 0.5 * ((fieldA[fi + 1].z - fieldA[fi - 1].z) - (fieldA[fi + gw].y - fieldA[fi - gw].y));
-  let churn = smoothstep(0.035, 0.16, abs(curl)) * smoothstep(0.1, 0.4, sp);
-  let foam = max(fieldB[fi].w * 0.9972, churn);
+  // only fast, rotating flow aerates; the air is gone again in about a second
+  let churn = smoothstep(0.05, 0.18, abs(curl)) * smoothstep(0.22, 0.55, sp);
+  let foam = max(fieldB[fi].w * 0.995, churn);
 
   fieldA[fi] = vec4f(mass / P.g.w, v, sp);
   // dye mix, distance to the nearest wall and the owning vessel: particles deep inside read these
@@ -327,7 +328,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       }
       let t = P.rects[ti];
       p.pos = vec2f(mix(t.box.x + m + 1.0, t.box.z - m - 1.0, rand(seed + 1u)), t.box.y + m + 0.5 + 2.0 * rand(seed + 2u));
-      p.vel = t.vel.xy + vec2f(0.0, 0.05);
+      // released already falling, so rain leaves the top edge at once instead of gathering there
+      p.vel = t.vel.xy + P.g.xy * 150.0;
       p.C = vec4f(0.0);
       p.state = P.misc.x + 0.02 + 1.5 * rand(seed + 3u);
       p.win = ownerOf(p.pos, ti);

@@ -43,7 +43,6 @@ function askOpener(): Promise<SharedArrayBuffer | null> {
 }
 
 async function main(): Promise<void> {
-  if (isStagePage()) { mountStage(document); return; }
 
   const canvas = document.querySelector<HTMLCanvasElement>('#tank')!;
   const query = new URLSearchParams(location.search);
@@ -54,6 +53,7 @@ async function main(): Promise<void> {
       addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
     }
   }
+  if (isStagePage()) { mountStage(document); return; }
   const pocket = isPocket(window);
   const dark = matchMedia('(prefers-color-scheme: dark)').matches;
   const engine = new Engine({
@@ -62,6 +62,8 @@ async function main(): Promise<void> {
     particles: query.has('particles') ? Number(query.get('particles')) : undefined,
   });
   window.tidal = engine;
+  // a window that opens sitting out must never be announced as part of the world
+  if (query.has('inactive')) engine.setActive(false);
 
   const shared = await askOpener();
   if (shared) engine.transport.adopt(shared);
@@ -158,6 +160,11 @@ async function main(): Promise<void> {
       if (tank) { tank.close(); return; }
       if (!floatSupported()) return;
       void openFloat(engine, (doc, view) => {
+        if (query.has('nokeys')) {
+          for (const type of ['keydown', 'keyup', 'keypress'] as const) {
+            doc.defaultView?.addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
+          }
+        }
         // the floating tank shows its own volume and number through the same chrome
         const facade = new Proxy(engine, {
           get(target, key) {

@@ -5,11 +5,11 @@
  * Metrics used below (B612 / B612 Mono, per em): ascent 0.96, descent 0.25, cap height 0.76,
  * mono advance 0.65. With line-height L and size S the baseline sits at (L - 1.21 S) / 2 + 0.96 S.
  *
- * Nothing here has a background. Text is printed on the glass. In the air it keeps a hard knock-out: eight
- * unblurred copies of each glyph in paper, 1 px out (0.7 px on the diagonals), plus one exactly under it, so
- * text drawn at partial strength always mixes with paper, never with the liquid behind it. Never a blur.
- * Behind each block of text the canvas also fades its ruling (chrome.ts tells it where). Under a dark liquid
- * the knock-out would only draw a dark rim, so that text turns paper-coloured instead (data-under).
+ * Nothing here has a background. Text is printed on the glass. The stack and the controls keep a hard
+ * knock-out: eight unblurred copies of each glyph in paper, 1 px out (0.7 px on the diagonals), plus one
+ * exactly under it, so text drawn at partial strength always mixes with paper, never with the liquid behind
+ * it. Never a blur. The graduation numerals and the credit are printed plain, with no knock-out in any state.
+ * Behind each block of text the canvas also fades its ruling (chrome.ts tells it where).
  */
 
 .tc {
@@ -36,7 +36,6 @@
   font: 400 10px/13px 'B612', ui-sans-serif, sans-serif;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  text-shadow: var(--tc-knock);
   font-kerning: normal;
   font-synthesis: none;
   -webkit-user-select: none;
@@ -47,6 +46,12 @@
 
 .tc[data-dark] {
   --tc-readout: color-mix(in srgb, var(--ink) 88%, transparent);
+}
+
+/* the knock-out: the top-left stack and the controls only */
+.tc-stack,
+.tc-side {
+  text-shadow: var(--tc-knock);
 }
 
 /* Numbers set inside label lines: B612 Mono, tracked only a little so they read as one figure. */
@@ -122,11 +127,11 @@
   margin-top: 0.495px;
 }
 
+/* The falling line always keeps its place, so the stack never changes height; it fades in and out. */
 .tc-rain {
-  transition: opacity 200ms linear;
+  transition: opacity 140ms linear;
 }
 
-/* Hidden but still in place, so the stack's height (and the graduation numerals below it) stay put. */
 .tc-rain[data-off] {
   opacity: 0;
 }
@@ -140,7 +145,7 @@
 }
 
 /* Each numeral's baseline sits 2 px above its tick (chrome.ts places them), so a surface resting on a
-   graduation never cuts through its figure. */
+   graduation never cuts through its figure. Printed plain: no knock-out. */
 .tc-tick {
   position: absolute;
   left: 24px;
@@ -158,13 +163,21 @@
 
 /* ---------------------------------------------------------------- controls and help, top right */
 
-/* The first row's baseline sits on the label's: 18 + 0.345 + 10.56 = 28.905 px, less the 10.05 px a
-   10/13 line puts above its baseline. The box stops 17 px from the edge so the ink of the last capital
-   (whose side bearing is about 0.09 em) stops at 18. */
+/* The first row's baseline sits on the label's. The label's computes to 18 + 0.345 + 10.56 = 28.905 px but
+   renders snapped to 28.5; a control's words (an inline block) do not snap the same way, so the rows start at
+   28.5 less the 10.05 px a 10/13 line puts above its baseline. The box stops 17 px from the edge so the ink of
+   the last capital (whose side bearing is about 0.09 em) stops at 18. */
 .tc-side {
   position: absolute;
-  top: 18.855px;
+  top: 18.45px;
   right: 17px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.tc-controls {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -176,6 +189,21 @@
   justify-content: flex-end;
   column-gap: 22px;
   row-gap: 10px;
+}
+
+/* On the column grid (chrome.ts sets the column widths) each control starts at its column's left edge, so
+   the actions stand over the last settings with their left edges in line. */
+.tc-side[data-layout='grid'] .tc-row,
+.tc-side[data-layout='split'] .tc-row {
+  display: grid;
+  justify-content: end;
+  justify-items: start;
+}
+
+/* split: the first setting has a line of its own, right-aligned, above the settings that share the columns */
+.tc-side[data-layout='split'] .tc-row-2 > .tc-btn:first-child {
+  grid-column: 1 / -1;
+  justify-self: end;
 }
 
 /* only when the actions are there: in a popup the settings are the first row, on the label's baseline */
@@ -202,6 +230,7 @@
   color: inherit;
   font: inherit;
   letter-spacing: inherit;
+  text-align: left;
   text-transform: inherit;
   /* form controls reset text-shadow; the knock-out must reach the buttons too */
   text-shadow: inherit;
@@ -215,14 +244,6 @@
   display: none;
 }
 
-/* The box ends at the last glyph, not after its tracking: the row's right edge, the underline and the
-   focus ring all measure from ink. */
-.tc-btn > :last-child,
-.tc-credit > span,
-.tc-help dt > span {
-  margin-right: -0.14em;
-}
-
 /* A comfortable hit area without moving anything; rows are 23 px apart and columns 22 px, so
    neighbouring areas meet without overlapping. */
 .tc-btn::before {
@@ -231,29 +252,52 @@
   inset: -5px -11px;
 }
 
-/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line), knocked out like the
-   text: a hard 1 px of paper either side, no blur. */
-.tc-btn::after {
+/* The words of a control. Its box ends at the last glyph, not after its tracking: the column grid, the
+   underline and the focus ring all measure from ink. */
+.tc-ink {
+  position: relative;
+  display: inline-block;
+  line-height: 13px;
+  vertical-align: top;
+}
+
+.tc-ink > :last-child,
+.tc-credit > span,
+.tc-help dt > span {
+  margin-right: -0.14em;
+}
+
+/* 1 px underline, 4 px below the baseline (baseline at 10 px in the 13 px line), knocked out like the text.
+   Actions carry it at rest, quietly; settings only on hover or focus. Opaque mixes, so the liquid behind
+   never tints it. */
+.tc-ink::after {
   content: '';
   position: absolute;
   left: 0;
   right: 0;
   top: 14px;
   height: 1px;
-  background: currentColor;
+  background: var(--ink);
   box-shadow: 0 0 0 1px var(--paper);
   opacity: 0;
-  transition: opacity 140ms linear;
+  transition: opacity 140ms linear, background-color 140ms linear;
+}
+
+.tc-row-1 .tc-ink::after {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ink) 35%, var(--paper));
 }
 
 @media (hover: hover) {
-  .tc-btn:hover::after {
+  .tc-btn:hover .tc-ink::after {
     opacity: 1;
+    background: var(--ink);
   }
 }
 
-.tc-btn:focus-visible::after {
+.tc-btn:focus-visible .tc-ink::after {
   opacity: 1;
+  background: var(--ink);
 }
 
 .tc-btn:focus {
@@ -263,6 +307,38 @@
 .tc-btn:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
+}
+
+/* What the pointed-at or focused control does, in a sentence under the rows. Takes no space. */
+.tc-gloss {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: max-content;
+  margin: 0;
+  color: var(--tc-ink-2);
+  letter-spacing: 0.02em;
+  text-align: right;
+  text-transform: none;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 140ms linear, visibility 0s linear 140ms;
+}
+
+.tc-gloss[data-on] {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms linear, visibility 0s;
+}
+
+/* measures wordings; never seen */
+.tc-ruler {
+  position: absolute;
+  top: 0;
+  right: 0;
+  visibility: hidden;
+  white-space: nowrap;
 }
 
 /* Read like a menu, right-aligned under the settings: what it does, then the key flush with the rows'
@@ -298,7 +374,8 @@
 
 /* ---------------------------------------------------------------- credit */
 
-/* 70% ink on the light paper is 4.9:1. Like the controls, the ink (not the box) stops 18 px from the edge. */
+/* 70% ink on the light paper is 4.9:1. Like the controls, the ink (not the box) stops 18 px from the edge.
+   Printed plain: no knock-out. */
 .tc-credit {
   position: absolute;
   right: 17px;
@@ -312,12 +389,6 @@
 
 /* ---------------------------------------------------------------- under a deep-coloured liquid (light theme only) */
 
-/* No knock-out under the liquid: printed straight on the glass in whichever of paper or ink reads against it. */
-.tc-tick[data-under],
-.tc-credit[data-under] {
-  text-shadow: none;
-}
-
 .tc-tick[data-under='paper'],
 .tc-credit[data-under='paper'] {
   color: var(--paper);
@@ -326,14 +397,6 @@
 .tc-tick[data-under='ink'],
 .tc-credit[data-under='ink'] {
   color: var(--ink);
-}
-
-.tc-tick-unit[data-under='paper'] {
-  color: color-mix(in srgb, var(--paper) 60%, transparent);
-}
-
-.tc-tick-unit[data-under='ink'] {
-  color: color-mix(in srgb, var(--ink) 60%, transparent);
 }
 
 /* ---------------------------------------------------------------- compact: picture-in-picture, small windows */
@@ -375,7 +438,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .tc-rain,
-  .tc-btn::after {
+  .tc-ink::after,
+  .tc-gloss,
+  .tc-gloss[data-on] {
     transition: none;
   }
 }

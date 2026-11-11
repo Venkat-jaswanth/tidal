@@ -18,17 +18,17 @@ export const LIQUIDS: Record<string, LiquidDef> = {
       ...WATER_LOOK,
       absorb: [0, 0, 0], tint: '#b4bac3', tintOpacity: 0.04, bodyOpacity: 0.96,
       refraction: 0, magnification: 1, dispersion: 0, caustics: 0,
-      meniscus: -6, mirror: 0.15, foam: 0, metal: 1,
+      meniscus: -12, mirror: 0.1, foam: 0, metal: 1,
     },
   },
   // Thick and slow: it folds and coils instead of splashing.
   honey: {
     id: 'honey',
-    physics: { ...WATER, gravityY: 2600, viscosity: 0.9, damping: 0.9985, soundSpeed2: 0.6 },
+    physics: { ...WATER, gravityY: 2600, viscosity: 2.2, damping: 0.9985, soundSpeed2: 0.6 },
     look: {
       ...WATER_LOOK,
       absorb: [0.06, 0.26, 0.9], tint: '#d9901a', tintOpacity: 0.3, bodyOpacity: 0.48,
-      refraction: 16, magnification: 1.16, dispersion: 0.03, caustics: 0.35,
+      refraction: 16, magnification: 1.16, dispersion: 0.03, caustics: 0.15,
       meniscus: 13, mirror: 0.6, foam: 0.25,
     },
   },
@@ -39,7 +39,7 @@ export const LIQUIDS: Record<string, LiquidDef> = {
     look: {
       ...WATER_LOOK,
       absorb: [0.05, 0.05, 0.05], tint: INK_ULTRAMARINE, inkB: INK_CADMIUM, tintOpacity: 0.12, bodyOpacity: 0.82,
-      caustics: 0.25, mirror: 0.5, foam: 0,
+      caustics: 0.04, mirror: 0.5, foam: 0,
     },
   },
 };

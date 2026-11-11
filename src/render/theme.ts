@@ -45,10 +45,10 @@ export interface LiquidLook {
 }
 
 export const WATER_LOOK: LiquidLook = {
-  absorb: [0.095, 0.024, 0.028],
+  absorb: [0.14, 0.03, 0.022],
   tint: '#bfe6ea', tintOpacity: 0, bodyOpacity: 0,
   refraction: 10, magnification: 1.09, dispersion: 0.06, caustics: 1,
-  meniscus: 12, mirror: 0.8, foam: 1,
+  meniscus: 17, mirror: 0.85, foam: 1,
 };
 
 export function rgb(hex: string): [number, number, number] {
