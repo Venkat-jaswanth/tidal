@@ -1,4 +1,4 @@
-![Tidal: water pouring between three browser windows](launch/clips/hero.gif)
+![Tidal: water pouring between two browser windows](launch/clips/hero.gif)
 
 Tidal is a web toy: one body of water that lives across all your browser windows, driven by where the windows are on your screen.
 
@@ -42,7 +42,7 @@ Open http://localhost:5173 in Chrome and press **+ Vessel**. To host it yourself
 | Browser | Status |
 |---|---|
 | Chrome and Edge, desktop | Everything. |
-| Firefox, desktop | Multi-window and Float where WebGPU is available. Untested. |
+| Firefox, desktop | Untested in a real Firefox. Multi-window needs WebGPU; Float needs Document Picture-in-Picture. The Firefox build used by the tests has neither enabled and shows the static page. |
 | Safari, desktop | Multi-window, no Float. Untested. |
 | Phones | One window with tilt. Tested in emulation only so far. |
 | No WebGPU | A static page explaining what is needed. |
@@ -54,8 +54,8 @@ Open http://localhost:5173 in Chrome and press **+ Vessel**. To host it yourself
 - A tab, unlike a popup, cannot be moved by script, so Perform uses popups.
 - The floating tank cannot be moved by script either; you can only drag it.
 - Tilt on a phone has only been tested in emulation, not on a real device.
-- The films in `launch/` are composites: each window recorded its own canvas and its position on screen, and the frames were assembled afterwards. They are not screen recordings.
-- Performance on an Apple M4 with three windows and 100,000 particles: 120 frames a second on the built-in 120 Hz display, with the simulation taking about 3.2 ms of GPU time per frame and each window about 1 to 2 ms to draw. On a 60 Hz external display it holds 60 frames a second, with the simulation at about 7 ms per frame.
+- The films in `launch/` are composites, not screen recordings. Each window recorded its own canvas and logged its position on screen; a compositor then drew the stage, plain window frames, titles and labels around those recordings. The hero film follows its own two-window choreography, not the Perform one.
+- Performance on an Apple M4 with three windows and 100,000 particles: 120 frames a second on the built-in 120 Hz display, with the simulation taking about 3.2 ms of GPU time per frame and each window about 1 to 2 ms to draw. On a 60 Hz external display it holds 60 frames a second, with the simulation at between 5.5 and 7.3 ms per frame across runs.
 
 ## Development
 
