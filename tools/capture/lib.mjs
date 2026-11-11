@@ -157,17 +157,11 @@ export function stalls(meta, from, to) {
   return { frames: L.length, over25: gaps.filter((g) => g > 25).length, over40: gaps.filter((g) => g > 40).length, worst: Math.round(Math.max(0, ...gaps)), missed: Math.round(gaps.reduce((a, g) => a + Math.max(0, Math.round(g / 16.667) - 1), 0)) };
 }
 
-/** Keyboard guard for pages `?nokeys` does not reach: the stage backdrop and the floating tank's document. */
-export const guardKeys = (page) => page.evaluate(() => {
-  for (const type of ['keydown', 'keyup', 'keypress']) addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
-});
-
 /** The stage backdrop, filling the work area. It keeps the desktop out of sight while filming; the composite redraws its look. */
 export async function openStage(context, main, area, errors) {
   const stage = await openPopup(context, main, STAGE_URL, { left: area.x, top: area.y, width: area.w, height: area.h, name: 'tidal-stage' });
   watch(stage, 'stage', errors);
   await stage.waitForFunction(() => document.documentElement.dataset.stage === 'yes');
-  await guardKeys(stage);
   return stage;
 }
 
@@ -262,11 +256,15 @@ export function holdsOf(samples, minMs = 250) {
   return holds;
 }
 
-/** Every frame from 120 ms into each hold to its end must show the window at the hold's outer rectangle (±2 px). */
+/**
+ * Every frame from 150 ms into each hold to 100 ms before its end must show the window at the hold's
+ * outer rectangle (±2 px). The margins allow for a window that moves itself on its own frame clock, which
+ * can run a frame or two ahead of the frame times logged here.
+ */
 export function checkHolds(id, meta, holds, t0) {
   const problems = [];
   for (const h of holds) {
-    const L = meta.log.filter((e) => e.t >= h.from + 120 && e.t <= h.to);
+    const L = meta.log.filter((e) => e.t >= h.from + 150 && e.t <= h.to - 100);
     if (!L.length) { problems.push(`${id}: no frames logged during its hold from ${secs(h.from, t0)}`); continue; }
     const bad = L.find((e) => Math.abs(e.outer.x - h.x) > 2 || Math.abs(e.outer.y - h.y) > 2 || (h.w && Math.abs(e.outer.w - h.w) > 1) || (h.h && Math.abs(e.outer.h - h.h) > 1));
     if (bad) problems.push(`${id}: not at its pose at ${secs(bad.t, t0)}: wanted ${h.x},${h.y} ${h.w ?? '?'}×${h.h ?? '?'}, was ${bad.outer.x},${bad.outer.y} ${bad.outer.w}×${bad.outer.h}`);
@@ -373,15 +371,44 @@ export function labelDiff(pagePng, composedPng, { x, y, w, rows = 140 }) {
   return sum / a.length;
 }
 
-/** Share of a frame region (at `t` s) that reads as cadmium orange and as ultramarine. */
+/**
+ * Share of a frame region (at `t` s) that reads as orange and as blue, by hue: cadmium orange and
+ * ultramarine at any depth or thinness (deep ultramarine is nearly navy, thin ink is pale), never the
+ * paper or the ruling, which have little saturation.
+ */
 export function inkShares(file, t, { x, y, w, h }) {
   const rgb = execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-ss', String(t), '-i', file, '-vf', `crop=${w}:${h}:${x}:${y},format=rgb24`, '-frames:v', '1', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 26 });
   let orange = 0, blue = 0;
   const n = rgb.length / 3;
   for (let i = 0; i < rgb.length; i += 3) {
-    const r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
-    if (r > 150 && r > g + 50 && r > b + 80) orange++;
-    else if (b > r + 40 && b > g + 25) blue++;
+    const r = rgb[i] / 255, g = rgb[i + 1] / 255, b = rgb[i + 2] / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), c = max - min;
+    if (max < 0.12 || c / max < 0.3) continue; // black, paper and grey ruling have no hue to speak of
+    let hue = max === r ? ((g - b) / c) % 6 : max === g ? (b - r) / c + 2 : (r - g) / c + 4;
+    hue = (hue * 60 + 360) % 360;
+    if (hue >= 5 && hue <= 45) orange++;
+    else if (hue >= 210 && hue <= 260) blue++;
   }
   return { orange: orange / n, blue: blue / n };
 }
+
+/**
+ * The inks each vessel holds, from the simulation itself: the share of each vessel's particles that are
+ * the first ink, the second, or a mix. The latest snapshot carries 12 bytes a particle: the dye as rgb565
+ * at byte 8 (its red, the mix between the two inks: 0 the first, 31 the second) and the owner slot at 10.
+ */
+export const dyeCensus = (main) => main.evaluate(() => {
+  const s = window.tidal.transport.latestSnapshot();
+  if (!s) return null;
+  const v = new DataView(s.data.buffer, s.data.byteOffset, s.data.byteLength);
+  const by = {};
+  for (let i = 0; i < s.count; i++) {
+    const r5 = v.getUint16(i * 12 + 8, true) >> 11;
+    const slot = s.data[i * 12 + 10];
+    const c = (by[slot] ??= { n: 0, first: 0, second: 0 });
+    c.n++;
+    if (r5 <= 6) c.first++; else if (r5 >= 25) c.second++;
+  }
+  for (const c of Object.values(by)) { c.first = Math.round((c.first / c.n) * 1000) / 1000; c.second = Math.round((c.second / c.n) * 1000) / 1000; }
+  return { frame: s.frame, t: s.t, by };
+});

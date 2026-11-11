@@ -21,64 +21,106 @@ export function packetTimes(file) {
 
 /**
  * Pairs recorded frames with the animation frames they were requested in. A WebGPU canvas recording
- * usually starts with one stale frame (captured when the recorder starts); after it, each frame
- * answers one request in order, but the encoder may skip a request now and then, and the frames'
- * own timestamps jitter (a late frame is often followed by an early one). So the pairing is a
- * monotone alignment of the two timelines, solved by dynamic programming: each frame's timestamp,
- * less a steady capture delay, should land on its request's time; skipping a request costs a little.
- * Returns the content time of each recorded frame (its request's time), or NaN for a stale frame.
+ * may open with stale frames (the canvas as it was when the recorder started); the recorder counts
+ * them by when they arrived (`stale`, before the first requestFrame() call). After them each frame
+ * answers one request, in order, except that the encoder may skip a request, the last request may go
+ * unrecorded, and the frames' own timestamps jitter (a late frame is often followed by an early one).
+ * So the pairing is a monotone alignment of the two timelines, anchored at the first fresh frame and
+ * solved by dynamic programming: a frame's timestamp, less the steady capture delay, should land on its
+ * request's time; skipping a request costs a little, leaving a frame unmatched costs more.
+ * Returns the content time of each recorded frame (its request's time), or NaN for an unmatched one.
+ * Without a measured `stale` (older recordings) it is guessed from the pattern of gaps.
  */
-export function matchRequested(pts, requested) {
+export function matchRequested(pts, requested, { stale = null, delay = null } = {}) {
   const n = pts.length, m = requested.length;
   if (!n || !m) return new Array(n).fill(NaN);
-  // the shift at the start, from the pattern of gaps in the first two seconds
-  const head = Math.min(n, 120);
-  let d = 0, bestCost = Infinity;
-  for (let s = -2; s <= 2; s++) {
-    let cost = 0;
-    for (let i = 0; i < head; i++) {
-      const j = i - s;
-      if (j < 0 || j >= m) { cost += 50; continue; }
-      if (i > 0 && j > 0) cost += Math.abs((pts[i] - pts[i - 1]) * 1000 - (requested[j] - requested[j - 1]));
+  let d = stale;
+  if (d == null) {
+    const head = Math.min(n, 120);
+    let bestCost = Infinity;
+    for (let s = -2; s <= 2; s++) {
+      let cost = 0;
+      for (let i = 1; i < head; i++) {
+        const j = i - s;
+        if (j < 1 || j >= m) { cost += 50; continue; }
+        cost += Math.abs((pts[i] - pts[i - 1]) * 1000 - (requested[j] - requested[j - 1]));
+      }
+      if (cost < bestCost) { bestCost = cost; d = s; }
     }
-    if (cost < bestCost) { bestCost = cost; d = s; }
   }
   const i0 = Math.max(0, d);
   // the steady delay between a request and its frame's timestamp
   const es = [];
-  for (let i = i0; i < head; i++) if (i - d >= 0 && i - d < m) es.push(pts[i] * 1000 - (requested[i - d] - requested[Math.max(0, -d)]));
+  for (let i = i0; i < Math.min(n, i0 + 120); i++) if (i - d >= 0 && i - d < m) es.push(pts[i] * 1000 - requested[i - d]);
   es.sort((a, b) => a - b);
-  const E = es[es.length >> 1] ?? 0;
-  const R0 = requested[Math.max(0, -d)];
-  const at = (i) => pts[i] * 1000 - E + R0; // where frame i's request should be
+  // measured (see anchorOf), or else assumed from the first fresh frame answering the first request
+  const E = delay ?? es[es.length >> 1] ?? 0;
+  const at = (i) => pts[i] * 1000 - E; // where frame i's request should be, on the requests' clock
   const nearest = (t) => { let lo = 0, hi = m - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (requested[mid] < t) lo = mid + 1; else hi = mid; } return lo; };
-  const B = 6, SKIP = 6, CAP = 60;
+  const B = 6, SKIP = 30, UNMATCHED = 200, CAP = 100, BACK = 3;
   const cost = (i, j) => Math.min(CAP, Math.abs(at(i) - requested[j]));
-  const rows = [];
-  const band = (i) => { const c = nearest(at(i)); const js = []; for (let j = Math.max(0, c - B); j <= Math.min(m - 1, c + B); j++) js.push(j); return js; };
-  rows[i0] = band(i0).map((j) => ({ j, c: cost(i0, j), back: -1 }));
-  for (let i = i0 + 1; i < n; i++) {
-    const prev = rows[i - 1];
-    rows[i] = band(i).map((j) => {
-      let best = Infinity, back = -1;
-      for (let k = 0; k < prev.length; k++) {
-        const p = prev[k];
-        if (p.j >= j) continue;
-        const v = p.c + (j - p.j - 1) * SKIP;
-        if (v < best) { best = v; back = k; }
+  const rows = new Array(n);
+  for (let i = i0; i < n; i++) {
+    const c = nearest(at(i));
+    const row = [];
+    for (let j = Math.max(0, c - B); j <= Math.min(m - 1, c + B); j++) {
+      // the path starts at the first fresh frame; a later start leaves frames unmatched
+      let best = i === i0 ? (delay == null ? j * SKIP : 0) : (i - i0) * UNMATCHED + j * SKIP, back = null;
+      for (let q = Math.max(i0, i - BACK); q < i; q++) {
+        for (let k = 0; k < rows[q].length; k++) {
+          const p = rows[q][k];
+          if (p.j >= j) continue;
+          const v = p.c + (i - q - 1) * UNMATCHED + (j - p.j - 1) * SKIP;
+          if (v < best) { best = v; back = [q, k]; }
+        }
       }
-      return { j, c: best + cost(i, j), back };
-    });
+      row.push({ j, c: best + cost(i, j), back });
+    }
+    rows[i] = row;
+  }
+  // the path may end a few frames early, leaving the last frames unmatched
+  let end = null, endCost = Infinity;
+  for (let i = Math.max(i0, n - 1 - BACK); i < n; i++) {
+    for (let k = 0; k < rows[i].length; k++) {
+      const v = rows[i][k].c + (n - 1 - i) * UNMATCHED;
+      if (v < endCost) { endCost = v; end = [i, k]; }
+    }
   }
   const out = new Array(n).fill(NaN);
-  let k = rows[n - 1].reduce((b, e, idx, a) => (e.c < a[b].c ? idx : b), 0);
-  for (let i = n - 1; i >= i0 && k >= 0; i--) {
-    const e = rows[i][k];
-    if (!Number.isFinite(e.c)) break;
-    out[i] = requested[e.j];
-    k = e.back;
+  for (let cur = end; cur; ) {
+    const e = rows[cur[0]][cur[1]];
+    out[cur[0]] = requested[e.j];
+    cur = e.back;
   }
   return out;
+}
+
+/** Stale frames at the start of a canvas recording, from when its first frames arrived; null if not measured. */
+export function staleFrames(meta) {
+  const calls = meta.timing?.requestCalls;
+  if (!calls?.length || !meta.arrivals) return null;
+  return meta.arrivals.filter((a) => a < calls[0]).length;
+}
+
+/**
+ * The recording's timeline tied to the requests' clock. A second reader saw the first frames with their
+ * own timestamps (which the WebM keeps) and arrival times; the first fresh frame arrives a few ms after
+ * the requestFrame() call it answers. That pair gives the delay between a request's time and its frame's
+ * timestamp. Returns { stale, delay } or null when it cannot be measured.
+ */
+export function anchorOf(meta, pts) {
+  const calls = meta.timing?.requestCalls, arrivals = meta.arrivals, stamps = meta.stamps;
+  if (!calls?.length || !arrivals?.length || !stamps?.length || !meta.requested?.length) return null;
+  const stale = arrivals.filter((a) => a < calls[0]).length;
+  const k = arrivals.findIndex((a) => a >= calls[0]);
+  if (k < 0) return null;
+  let j = 0;
+  while (j + 1 < calls.length && calls[j + 1] <= arrivals[k]) j++;
+  if (arrivals[k] - calls[j] > 14) return null; // too slow to say which request it answered
+  // the recording must share the reader's timeline
+  const shared = pts.slice(0, 20).filter((p) => stamps.some((s) => Math.abs(s / 1000 - p * 1000) < 1.2)).length;
+  if (shared < Math.min(15, pts.length)) return null;
+  return { stale, delay: stamps[k] / 1000 - meta.requested[j] };
 }
 
 /** Adds cues (a seek index) to a MediaRecorder WebM without re-encoding. */
@@ -111,7 +153,9 @@ export function buildJob(jobPath) {
     const firstPts = pts[0];
     // content time of every recorded frame: the animation frame it was requested in, or else its
     // presentation time after the first frame's measured start
-    const content = meta.requested?.length ? matchRequested(pts, meta.requested) : pts.map((p) => meta.startedAt - latency + (p - firstPts) * 1000);
+    const anchor = anchorOf(meta, pts);
+    const stale = anchor?.stale ?? staleFrames(meta);
+    const content = meta.requested?.length ? matchRequested(pts, meta.requested, { stale, delay: anchor?.delay ?? null }) : pts.map((p) => meta.startedAt - latency + (p - firstPts) * 1000);
     const valid = content.filter(Number.isFinite);
     const contentStart = valid[0];
     const lastContent = valid[valid.length - 1];
@@ -140,6 +184,12 @@ export function buildJob(jobPath) {
       if (i >= 0 && content[i] <= T + slack) chosen[k] = i;
     }
     const used = chosen.filter((p) => p >= 0);
+    // the frames the job wants this window in (all of the clip, unless it opens or closes during it)
+    let wanted = 0;
+    for (let k = 0; k < frames; k++) {
+      const T = raw.t0 + (k * 1000) / fps;
+      if (T >= (w.visibleFrom ?? -Infinity) && T <= (w.visibleUntil ?? Infinity)) wanted++;
+    }
     // repeats the recording explains: output frames inside gaps where the page drew nothing new
     let explained = 0;
     for (let i = 1; i < valid.length; i++) {
@@ -155,7 +205,7 @@ export function buildJob(jobPath) {
       id: w.id, kind: 'video', src: url(seekable), z: w.z ?? 0, titleBar: w.titleBar ?? null, dark: !!w.dark, fixedTitle: w.title ?? null,
       log: meta.log, texts: w.labels === false ? null : (meta.texts?.length ? meta.texts : null), frames: shownPts, seekTo, nextPts,
       visibleFrom, visibleUntil, dpr: meta.log[0]?.dpr ?? 1,
-      report: { method: meta.requested?.length ? `requested (${pts.length} frames / ${meta.requested.length} requests)` : `startedAt-${latency}ms`, pick: `${nearest ? 'nearest' : 'latest'} (phase ${phase.toFixed(2)} ms)`, frames: used.length, distinctSourceFrames: distinct, repeated: used.length - distinct, explained, visibleFrom: Math.round(visibleFrom - raw.t0), visibleUntil: Math.round(visibleUntil - raw.t0) },
+      report: { method: meta.requested?.length ? `requested (${pts.length} frames / ${meta.requested.length} requests, ${stale ?? '?'} stale, ${anchor ? 'anchored' : 'not anchored'})` : `startedAt-${latency}ms`, pick: `${nearest ? 'nearest' : 'latest'} (phase ${phase.toFixed(2)} ms)`, frames: used.length, wanted, distinctSourceFrames: distinct, repeated: used.length - distinct, explained, visibleFrom: Math.round(visibleFrom - raw.t0), visibleUntil: Math.round(visibleUntil - raw.t0) },
     });
   }
   return { name: raw.name, width: raw.width, height: raw.height, fps, frames, t0: raw.t0, map, background: raw.background ?? 'stage', stageGrid: raw.stageGrid ?? { x: area.x, y: area.y }, windows, audio: raw.audio ?? null, dir };
@@ -210,6 +260,7 @@ export async function compose(jobPath, outFile, first = 0, last = Infinity) {
     console.log(`  composed ${end - first + 1} frames in ${((Date.now() - t) / 1000).toFixed(0)} s; seek mismatches ${JSON.stringify(stats)}`);
     // every repeated frame must be one the recording explains (the page drew nothing new), give or take two
     for (const w of job.windows) {
+      if (w.report && w.report.frames < w.report.wanted - 3) problems.push(`${w.id}: shown in ${w.report.frames} of the ${w.report.wanted} frames it belongs in (its recording does not cover the clip, or its frames could not be matched)`);
       if (w.report && w.report.repeated > w.report.explained + 2) problems.push(`${w.id}: the composite repeats ${w.report.repeated} frames, the recording explains ${w.report.explained}`);
       const st = stats.find((x) => x.id === w.id);
       if (st && st.mismatches > 3) problems.push(`${w.id}: ${st.mismatches} frames could not be seeked exactly`);

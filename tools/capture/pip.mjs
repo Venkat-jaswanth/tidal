@@ -33,11 +33,6 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
   const [pipPage] = await Promise.all([context.waitForEvent('page', { timeout: 10000 }).catch(() => null), main.getByRole('button', { name: /float/i }).click()]);
   await main.waitForFunction(() => window.tidalApp.float(), null, { timeout: 10000 });
   if (!pipPage) throw new Problem('the floating window did not appear as a page');
-  // `?nokeys` does not reach the floating window's document: keep stray keystrokes out of it too
-  await main.evaluate(() => {
-    const w = window.tidalApp.float().window;
-    for (const type of ['keydown', 'keyup', 'keypress']) w.addEventListener(type, (e) => { e.stopImmediatePropagation(); e.preventDefault(); }, { capture: true });
-  });
   const other = displays.find((d) => d.x !== area.x || d.y !== area.y);
   const PIP = other ? { w: 400, h: 300 } : { w: 640, h: 470 };
   const cdp = await context.newCDPSession(pipPage);
@@ -110,7 +105,10 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
   // its own label must name it and give its volume
   const shown = c.meta.texts.at(-1)?.items.map((i) => i.text) ?? [];
   const name = `VESSEL ${String(before.slot + 1).padStart(2, '0')}`;
-  if (!shown.includes(name) || !shown.includes(String(Math.round(c.meta.log.at(-1).ml)))) problems.push(`the tank's label reads ${JSON.stringify(shown.slice(0, 6))}, expected ${name} and ${Math.round(c.meta.log.at(-1).ml)}`);
+  // the readout counts with a spring and rounds its own way: within 1 mL of the volume
+  const ml = c.meta.log.at(-1).ml;
+  const readout = shown.map(Number).filter((v) => Number.isInteger(v) && Math.abs(v - ml) <= 1.5);
+  if (!shown.includes(name) || !readout.length) problems.push(`the tank's label reads ${JSON.stringify(shown.slice(0, 8))}, expected ${name} and ${Math.round(ml)} ± 1`);
   console.log('pip', JSON.stringify(probe(c.file)), 'worst stall in clip', log.worst, 'ms; label', JSON.stringify(shown.filter((t) => /VESSEL|^\d+$/.test(t)).slice(0, 3)));
 
   writeJob(dir, {

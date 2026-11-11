@@ -2,7 +2,7 @@
 // raised one pours into the other and the colours swirl. Composes launch/clips/ink-mix.mp4.
 // node tools/capture/ink.mjs [--no-compose | --compose-only]          env CAPTURE_ATTEMPTS (default 3)
 import { ROOT, openMain, openStage, openVessel, sitOut, waitForRest, logVolumes, readVolumes, saveCapture, writeJob, clockOf, cleanDir, sleep, probe,
-  checkLog, checkHolds, checkVolume, checkOutput, inkShares, shoot, finish, lastTake } from './lib.mjs';
+  checkLog, checkHolds, checkVolume, checkOutput, inkShares, dyeCensus, shoot, finish, lastTake } from './lib.mjs';
 import { compose } from './compose.mjs';
 
 const SECONDS = 7;
@@ -51,6 +51,12 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
     run(t0 + push[0] * 1000, push[1] * 1000, (u) => moveTo(Math.round(x0 + (x1 - x0) * ease(u)), y));
     run(t0 + shake[0] * 1000, shake[1] * 1000, (u) => moveTo(x1, Math.round(y + 16 * Math.sin(u * Math.PI * 6) * (1 - u))));
   }, [t0, R.x, rTouch, R.y, PUSH, SHAKE]);
+  // what the simulation says each vessel holds: once before they meet, then while they mix
+  const census = [];
+  for (const s of [0.4, 2, 3, 4, 5]) {
+    while ((await clockOf(main)) < t0 + s * 1000) await sleep(20);
+    census.push({ s, ...(await dyeCensus(main)) });
+  }
   while ((await clockOf(main)) < t1 + 400) await sleep(250);
   const volumes = await readVolumes(main);
   const caps = {};
@@ -68,6 +74,18 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
     { from: at(SHAKE[0] + SHAKE[1]), to: t1, ...R, x: rTouch },
   ], t0));
   problems.push(...checkVolume(volumes, t0 - 500, t1, t0));
+  // the inks, from the simulation: each vessel one ink before they meet, then the other ink in L
+  const [sL, sR] = filled.map((f) => f.slot);
+  const ink = (c, slot) => c.by?.[slot] ?? { first: 0, second: 0 };
+  const b0 = census[0];
+  const own = (c) => (c.first >= 0.95 ? 'first' : c.second >= 0.95 ? 'second' : null);
+  const inkL = own(ink(b0, sL)), inkR = own(ink(b0, sR));
+  if (!inkL || !inkR || inkL === inkR) problems.push(`before they meet the vessels do not hold one ink each: L ${JSON.stringify(ink(b0, sL))}, R ${JSON.stringify(ink(b0, sR))}`);
+  else for (const c of census.slice(1)) {
+    const l = ink(c, sL);
+    if (l[inkR] < 0.03 || l[inkL] < 0.3) problems.push(`no mixing in L at ${c.s} s: ${Math.round(l[inkL] * 100)} % its own ink, ${Math.round(l[inkR] * 100)} % R's`);
+  }
+  console.log('inks by slot (share of the first / second ink):', census.map((c) => `${c.s}s L ${ink(c, sL).first}/${ink(c, sL).second} R ${ink(c, sR).first}/${ink(c, sR).second}`).join(' · '));
   for (const [id, c] of Object.entries(caps)) console.log(id, JSON.stringify(probe(c.file)), 'worst stall in clip', logs[id].worst, 'ms');
   writeJob(dir, {
     name: 'ink-mix', width: 1920, height: 1080, fps: 60, t0, duration: SECONDS,

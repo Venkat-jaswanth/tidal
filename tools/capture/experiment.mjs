@@ -5,8 +5,8 @@
 //     WebGPU water renders and Perform runs; reports each recording's frame rate and missed frames.
 // node tools/capture/experiment.mjs [sync|load|both] [canvas]
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { matchRequested } from './compose.mjs';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { matchRequested, staleFrames, anchorOf } from './compose.mjs';
 import { BASE, ROOT, tidalUrl, STAGE_URL, launch, watch, setBounds, openPopup, workArea, saveCapture, probe, cleanDir, sleep } from './lib.mjs';
 
 const which = process.argv[2] ?? 'both';
@@ -53,7 +53,10 @@ async function sync() {
     const raw = execFileSync('ffmpeg', ['-v', 'error', '-i', file, '-fps_mode', 'passthrough', '-vf', 'scale=12:1:flags=area', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], { maxBuffer: 1 << 26 });
     const offsets = [];
     const exact = [];
-    const content = meta.requested?.length ? matchRequested(ts, meta.requested) : null;
+    const saved = JSON.parse(readFileSync(`${dir}/sync-${k}.json`, 'utf8'));
+    const anchor = anchorOf(saved, ts);
+    const content = meta.requested?.length ? matchRequested(ts, meta.requested, { stale: anchor?.stale ?? staleFrames(saved), delay: anchor?.delay ?? null }) : null;
+    console.log(`  anchor ${JSON.stringify(anchor)}`);
     for (let i = 0; i < ts.length && (i + 1) * 12 <= raw.length; i++) {
       let n = 0;
       for (let b = 0; b < 12; b++) n = (n << 1) | (raw[i * 12 + b] > 127 ? 1 : 0);
@@ -62,6 +65,16 @@ async function sync() {
       if (t !== undefined && content) exact.push(content[i] - t);
     }
     if (content) console.log(`  requested ${meta.requested.length}, recorded ${ts.length}; content time from requests - paint time, ms: ${JSON.stringify(summary(exact))}`);
+    if (meta.timing.requestCalls?.length) {
+      // stale frames: by arrival before the first requestFrame() call, and by what frame 0 shows
+      const arrivals = JSON.parse(readFileSync(`${dir}/sync-${k}.json`, 'utf8')).arrivals ?? [];
+      const predicted = arrivals.filter((a) => a < meta.timing.requestCalls[0]).length;
+      let n0 = 0;
+      for (let b = 0; b < 12; b++) n0 = (n0 << 1) | (raw[b] > 127 ? 1 : 0);
+      const shown = painted.get(n0);
+      const truth = shown !== undefined && shown < meta.requested[0] - 1 ? 1 : 0;
+      console.log(`  stale first frame: predicted ${predicted}, true ${truth} (frame 0 shows a paint ${shown !== undefined ? (shown - meta.requested[0]).toFixed(1) : '?'} ms from the first request); first arrivals - first request call: ${arrivals.slice(0, 3).map((a) => (a - meta.timing.requestCalls[0]).toFixed(1)).join(', ')} ms`);
+    }
     const s = offsets.slice().sort((a, b) => a - b);
     const p = probe(file);
     console.log(`sync ${k}: settings ${JSON.stringify(started.settings && { w: started.settings.width, h: started.settings.height, fps: started.settings.frameRate, surface: started.settings.displaySurface })}`);

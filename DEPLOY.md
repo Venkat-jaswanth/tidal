@@ -48,3 +48,9 @@ crossOriginIsolated   // must be true
 ```
 
 Then press **+ Vessel**: a second window should open and take a share of the water.
+
+## Social card
+
+The card image is `public/og.png` (1200×630). Card crawlers need an absolute URL, so after the first
+deploy replace `/og.png` in the two image meta tags in `index.html` with `https://<your-domain>/og.png`
+and deploy again.

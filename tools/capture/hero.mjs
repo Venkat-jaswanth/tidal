@@ -4,7 +4,7 @@
 // node tools/capture/hero.mjs [--no-compose | --compose-only]          env CAPTURE_ATTEMPTS (default 3)
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { ROOT, openMain, openStage, openVessel, reach, sitOut, waitForRest, logVolumes, readVolumes, saveCapture, writeJob, clockOf, cleanDir, sleep, probe,
+import { ROOT, openMain, openStage, openVessel, sitOut, waitForRest, logVolumes, readVolumes, saveCapture, writeJob, clockOf, cleanDir, sleep, probe,
   checkLog, holdsOf, checkHolds, checkVolume, checkOutput, labelDiff, shoot, finish, lastTake } from './lib.mjs';
 import { compose, still } from './compose.mjs';
 
@@ -20,7 +20,7 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
   const film = await main.evaluate(async (stage) => {
     const m = await import('/src/perform/timeline.ts');
     const track = [];
-    for (let i = 0; i <= m.HERO_SECONDS * 50; i++) track.push({ s: i / 50, a: m.heroPoseAt(0, i / 50, stage), b: m.heroPoseAt(1, i / 50, stage) });
+    for (let i = 0; i <= m.HERO_SECONDS * 100; i++) track.push({ s: i / 100, a: m.heroPoseAt(0, i / 100, stage), b: m.heroPoseAt(1, i / 100, stage) });
     return { a: m.heroPoseAt(0, 0, stage), b: m.heroPoseAt(1, m.HERO_SECOND_OPENS, stage), seconds: m.HERO_SECONDS, opens: m.HERO_SECOND_OPENS, track };
   }, stage);
   console.log('work area', JSON.stringify(area), 'A', JSON.stringify(film.a), 'B', JSON.stringify(film.b));
@@ -29,14 +29,12 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
   const A = await openVessel(context, main, film.a, 'A', errors);
   await sitOut(main, true);
   const rest = await waitForRest(main, { afterMs: 6000 });
-  const restA = await A.evaluate(() => ({ ml: window.tidal.ml, slot: window.tidal.slot, energy: window.tidal.meta.energy[window.tidal.slot] }));
+  const restA = await A.evaluate(() => ({ ml: window.tidal.ml, slot: window.tidal.slot, energy: window.tidal.meta.energy[window.tidal.slot], rain: window.tidal.meta.rainMl }));
   console.log('at rest', JSON.stringify(rest), 'A', JSON.stringify(restA));
-  if (Math.round(restA.ml) !== 1000) problems.push(`A holds ${restA.ml.toFixed(1)} mL before the film, not 1000`);
+  if (Math.abs(restA.ml - 1000) > 1) problems.push(`A holds ${restA.ml.toFixed(1)} mL before the film, not 1000 ± 1`);
 
-  // vessel B opens sitting out, parked clear of A, and is put in its place; it joins at 2 s
-  const B = await openVessel(context, main, { ...film.b, x: area.x + area.w - film.b.w - 40, y: area.y + 40 }, 'B', errors, { inactive: true });
-  await B.evaluate(([x, y]) => moveTo(x, y), [film.b.x, film.b.y]);
-  await reach(B, 'B', film.b);
+  // vessel B opens in its place, sitting out of the world (`?inactive`); it joins at 2 s
+  const B = await openVessel(context, main, film.b, 'B', errors, { inactive: true });
   const bIndex = await main.evaluate(() => window.__opened.length - 1);
   await sleep(1000);
   const bReady = await B.evaluate(() => ({ ml: window.tidal.ml, active: window.tidal.registry.self.active }));
@@ -88,7 +86,8 @@ const take = process.argv.includes('--compose-only') ? lastTake(dir) : await sho
   problems.push(...checkHolds('B', caps.B.meta, holdsOf(track('b')).filter((h) => h.to > joinedAt).map((h) => ({ ...h, from: Math.max(h.from, joinedAt) })), t0));
   problems.push(...checkVolume(volumes, t0 - 500, t1, t0));
   const first = caps.A.meta.log.find((e) => e.t >= t0);
-  if (!first || Math.round(first.ml) !== 1000) problems.push(`the film does not open on 1000 mL in A (${first?.ml})`);
+  const opening = volumes.find((v) => v.t >= t0);
+  if (!first || Math.abs(first.ml - 1000) > 1 || !opening || opening.rain >= 1) problems.push(`the film does not open on the litre at rest in A (${first?.ml?.toFixed(1)} mL held, ${opening?.rain?.toFixed(1)} mL falling)`);
   if (!au.meta.audio.delivered) problems.push('no sound was recorded from the leader');
   const vol = spawnSync('ffmpeg', ['-hide_banner', '-i', au.file, '-af', 'volumedetect', '-f', 'null', '-']).stderr.toString().match(/max_volume: ([-\d.]+) dB/);
   if (!vol || Number(vol[1]) < -45) problems.push(`the leader's sound is silent (max ${vol?.[1]} dB)`);

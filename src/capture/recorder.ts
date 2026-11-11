@@ -82,7 +82,7 @@ export interface CaptureResult {
   audio: { requested: boolean; delivered: boolean; label: string };
   settings: MediaTrackSettings | null;
   /** How startedAt was found, and the arrival times of frames at a second reader. */
-  timing: { method: string; startCall: number; onstart: number; firstFrame: number | null; frameArrivals: number[]; frameStamps: number[] };
+  timing: { method: string; startCall: number; onstart: number; firstFrame: number | null; frameArrivals: number[]; frameStamps: number[]; requestCalls: number[] };
   /**
    * Canvas recordings only: clock() of the animation frame each recorded frame was asked for. The
    * canvas is captured with captureStream(0) and one requestFrame() per animation frame, so recorded
@@ -178,7 +178,7 @@ class Recording {
   private readonly texts: TextFrame[] = [];
   private lastTextKey = '';
   private logging = false;
-  private readonly timing: CaptureResult['timing'] = { method: 'onstart', startCall: 0, onstart: 0, firstFrame: null, frameArrivals: [], frameStamps: [] };
+  private readonly timing: CaptureResult['timing'] = { method: 'onstart', startCall: 0, onstart: 0, firstFrame: null, frameArrivals: [], frameStamps: [], requestCalls: [] };
   private stopped: Promise<void> | null = null;
   private reader: ReadableStreamDefaultReader<{ timestamp: number; close(): void }> | null = null;
   private mime = '';
@@ -236,9 +236,11 @@ class Recording {
     this.stopped = new Promise<void>((resolve) => { rec.onstop = () => resolve(); });
     const started = new Promise<void>((resolve) => { rec.onstart = () => { this.timing.onstart = clock(); resolve(); }; });
 
-    // A second reader of the same frames tells when the first recorded frame arrived.
+    // A second reader of the same frames tells when the first recorded frames arrived. For a canvas
+    // recording it shows whether the recording opens with a stale frame: one that arrives before the
+    // first requestFrame() call can only be the canvas as it was before recording began.
     const Processor = (globalThis as unknown as { MediaStreamTrackProcessor?: TrackProcessorCtor }).MediaStreamTrackProcessor;
-    if (hasVideo && video && Processor && !this.manual) {
+    if (hasVideo && video && Processor) {
       try {
         const clone = video.clone();
         this.reader = new Processor({ track: clone, maxBufferSize: 4 }).readable.getReader();
@@ -247,7 +249,7 @@ class Recording {
           for (;;) {
             const { value, done } = await reader.read();
             if (done || !value) break;
-            if (this.timing.startCall) {
+            if (this.timing.startCall && (!this.manual || this.timing.frameArrivals.length < 40)) {
               this.timing.frameArrivals.push(clock());
               this.timing.frameStamps.push(value.timestamp);
             }
@@ -289,6 +291,7 @@ class Recording {
       if (t - lastT < 4) return;
       lastT = t;
       if (this.capturing && this.manual && t - (this.requested[this.requested.length - 1] ?? 0) >= 600 / this.fps) {
+        if (this.timing.requestCalls.length < 40) this.timing.requestCalls.push(clock());
         this.manual.requestFrame();
         this.requested.push(t);
       }
