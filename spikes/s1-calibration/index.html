@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>S1 calibration</title>
+<body style="margin:0;font:12px monospace"><button id="open">open</button><button id="open2">open2</button><button id="open3">open3</button>
+<pre id="o"></pre>
+<script>
+window.last = null;
+window.refs = {};
+addEventListener('mousemove', e => { window.last = {screenX:e.screenX, screenY:e.screenY, clientX:e.clientX, clientY:e.clientY, wsx:screenX, wsy:screenY}; });
+window.probe = () => {
+  const l = window.last;
+  return {
+    screenX, screenY, screenLeft, screenTop, outerWidth, outerHeight, innerWidth, innerHeight,
+    dpr: devicePixelRatio, scr: {w: screen.width, h: screen.height, aL: screen.availLeft, aT: screen.availTop, aW: screen.availWidth, aH: screen.availHeight},
+    hasMozInner: ('mozInnerScreenX' in window),
+    estX: (outerWidth - innerWidth) / 2, estY: outerHeight - innerHeight,
+    last: l,
+    calX: l ? l.screenX - l.clientX - l.wsx : null,
+    calY: l ? l.screenY - l.clientY - l.wsy : null,
+    calXnow: l ? l.screenX - l.clientX - screenX : null,
+    calYnow: l ? l.screenY - l.clientY - screenY : null,
+  };
+};
+const spec = (n, f) => `popup,width=${f.w},height=${f.h},left=${f.l},top=${f.t}`;
+document.getElementById('open').onclick = () => { refs.a = window.open('index.html?p=a', 'pa', 'popup,width=500,height=400,left=200,top=150'); };
+document.getElementById('open2').onclick = () => { refs.b = window.open('index.html?p=b', 'pb', 'popup,width=400,height=300,left=800,top=150'); };
+document.getElementById('open3').onclick = () => { refs.t = window.open('index.html?p=t', 'pt'); };
+</script>

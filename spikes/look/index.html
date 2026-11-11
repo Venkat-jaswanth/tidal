@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tidal — look</title>
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #chrome { position: fixed; inset: 0; pointer-events: none; color: var(--ink); font-family: var(--label); }
+      .cap { text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; line-height: 1; font-weight: var(--label-weight, 400); }
+      .num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-feature-settings: 'tnum', 'zero'; }
+      .grad { position: absolute; left: 24px; transform: translateY(-50%); font-size: 9px; opacity: 0.72; }
+      /* direction A: label plate top-left, quiet controls top-right */
+      [data-dir='bench'] .plate { position: absolute; left: 44px; top: 18px; display: grid; gap: 7px; }
+      [data-dir='bench'] .plate .big { font-size: 22px; letter-spacing: 0; }
+      [data-dir='bench'] .plate .big small { font-size: 10px; margin-left: 4px; letter-spacing: 0.14em; }
+      [data-dir='bench'] .rule { width: 132px; border-top: 1px solid currentColor; opacity: 0.55; }
+      [data-dir='bench'] .tools { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; }
+      /* direction B: darkroom, readout bottom-right, luminous */
+      [data-dir='darkroom'] .plate { position: absolute; right: 22px; bottom: 20px; text-align: right; display: grid; gap: 8px; text-shadow: 0 0 12px color-mix(in srgb, var(--ink) 45%, transparent); }
+      [data-dir='darkroom'] .plate .big { font-size: 34px; font-weight: 500; letter-spacing: -0.01em; }
+      [data-dir='darkroom'] .plate .big small { font-size: 11px; margin-left: 6px; letter-spacing: 0.16em; }
+      [data-dir='darkroom'] .rule { display: none; }
+      [data-dir='darkroom'] .tools { position: absolute; left: 44px; top: 18px; display: flex; gap: 20px; opacity: 0.8; }
+      /* direction C: millimetre, a large figure as the hero */
+      [data-dir='millimetre'] .plate { position: absolute; left: 46px; top: 14px; display: grid; gap: 2px; }
+      [data-dir='millimetre'] .plate .big { font-size: 76px; font-weight: 400; letter-spacing: -0.04em; line-height: 0.95; }
+      [data-dir='millimetre'] .plate .big small { font-size: 12px; letter-spacing: 0.16em; margin-left: 8px; vertical-align: 38px; }
+      [data-dir='millimetre'] .rule { display: none; }
+      [data-dir='millimetre'] .tools { position: absolute; right: 18px; bottom: 16px; display: flex; gap: 18px; }
+      [data-dir='millimetre'] .cap { font-size: 10.5px; letter-spacing: 0.12em; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="chrome">
+      <div class="plate">
+        <div class="cap" id="name">Vessel 01</div>
+        <div class="rule"></div>
+        <div class="num big"><span id="ml">1000</span><small class="cap">ml</small></div>
+      </div>
+      <div class="tools cap"><span>+ Vessel</span><span>Float</span><span>Perform</span><span>Water</span></div>
+      <div id="grads"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

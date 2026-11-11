@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>S8 tilt spike</title>
+<style>html,body{margin:0;height:100%;touch-action:none;font:15px system-ui}button{font-size:20px;padding:14px 22px;margin:16px}pre{margin:16px;white-space:pre-wrap}</style></head>
+<body>
+<button id="enable">Enable motion</button>
+<pre id="out"></pre>
+<script>
+(() => {
+  const FALLBACK_MS = 1500, SHAKE_JUMP = 12, SHAKE_COOLDOWN_MS = 400, DRAG_FULL_PX = 80;
+  const T = window.__tilt = {
+    mode: 'idle',            // idle | pending | orientation | touch
+    permission: 'n/a',       // n/a (no requestPermission API) | granted | denied | error
+    permCalls: [],           // {api, userActive}
+    g: { x: 0, y: 0 },       // gravity in SCREEN space, |g| <= 1, +y = down on screen
+    beta: null, gamma: null, angle: 0,
+    orientationEvents: 0, motionEvents: 0, shakes: 0, lastShakeAt: 0, lastMag: null,
+    fallbackReason: null, gpu: !!navigator.gpu, log: [],
+  };
+  const out = document.getElementById('out');
+  const render = () => { out.textContent = JSON.stringify({ ...T, log: undefined, permCalls: undefined }, null, 1); };
+  const clampLen = (x, y) => { const l = Math.hypot(x, y); return l > 1 ? { x: x / l, y: y / l } : { x, y }; };
+  // Prefer screen.orientation.type (Playwright's WebKit reports a wrong .angle: 90 in portrait, 0 in landscape; .type and window.orientation are right).
+  const TYPE_ANGLE = { 'portrait-primary': 0, 'landscape-primary': 90, 'portrait-secondary': 180, 'landscape-secondary': 270 };
+  const angle = () => {
+    const so = screen.orientation;
+    if (so && so.type in TYPE_ANGLE) return TYPE_ANGLE[so.type];
+    if (so && typeof so.angle === 'number') return so.angle;
+    if (typeof window.orientation === 'number') return ((window.orientation % 360) + 360) % 360;
+    return 0;
+  };
+
+  function gravityFromTilt(beta, gamma) {
+    const rad = Math.PI / 180;
+    const b = Math.max(-90, Math.min(90, beta)), g = Math.max(-90, Math.min(90, gamma));
+    // device-frame gravity (portrait): x right, y down
+    const dx = Math.sin(g * rad), dy = Math.sin(b * rad);
+    const a = angle() * rad;           // screen rotation relative to device portrait
+    const sx = dx * Math.cos(a) + dy * Math.sin(a);
+    const sy = -dx * Math.sin(a) + dy * Math.cos(a);
+    return clampLen(sx, sy);
+  }
+  T.gravityFromTilt = gravityFromTilt;
+
+  function onOrientation(e) {
+    if (e.beta == null || e.gamma == null) return;   // desktop Chrome fires an all-null event
+    T.orientationEvents++; T.beta = e.beta; T.gamma = e.gamma; T.angle = angle();
+    T.mode = 'orientation'; clearTimeout(T._fb);
+    const g = gravityFromTilt(e.beta, e.gamma); T.g.x = g.x; T.g.y = g.y; render();
+  }
+  function onMotion(e) {
+    const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+    T.motionEvents++;
+    const mag = Math.hypot(a.x, a.y, a.z || 0);
+    const now = performance.now();
+    if (T.lastMag != null && Math.abs(mag - T.lastMag) > SHAKE_JUMP && now - T.lastShakeAt > SHAKE_COOLDOWN_MS) { T.shakes++; T.lastShakeAt = now; }
+    T.lastMag = mag; render();
+  }
+
+  // touch-drag fallback
+  let drag = null, touchOn = false;
+  function enableTouch(reason) {
+    T.fallbackReason = reason; if (touchOn) { T.mode = 'touch'; render(); return; }
+    touchOn = true; T.mode = 'touch';
+    addEventListener('pointerdown', (e) => { if (e.target.id === 'enable') return; drag = { x: e.clientX, y: e.clientY }; });
+    addEventListener('pointermove', (e) => {
+      if (!drag || T.mode !== 'touch') return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y, l = Math.hypot(dx, dy);
+      if (l < 4) return;
+      const k = Math.min(1, l / DRAG_FULL_PX) / l; T.g.x = dx * k; T.g.y = dy * k; render();
+    });
+    addEventListener('pointerup', () => { drag = null; }); addEventListener('pointercancel', () => { drag = null; });
+    render();
+  }
+
+  function listen() {
+    addEventListener('deviceorientation', onOrientation); addEventListener('devicemotion', onMotion);
+    T.mode = 'pending'; render();
+    T._fb = setTimeout(() => { if (T.orientationEvents === 0) enableTouch('no-orientation-events-within-' + FALLBACK_MS + 'ms'); }, FALLBACK_MS);
+  }
+
+  document.getElementById('enable').addEventListener('click', async () => {
+    const DOE = window.DeviceOrientationEvent, DME = window.DeviceMotionEvent;
+    const needsPerm = DOE && typeof DOE.requestPermission === 'function';
+    if (!needsPerm) { listen(); return; }
+    try {
+      // both requests are issued synchronously inside the click gesture (iOS requires activation per call)
+      T.permCalls.push({ api: 'orientation', userActive: navigator.userActivation ? navigator.userActivation.isActive : null });
+      const p1 = DOE.requestPermission();
+      let p2 = Promise.resolve('granted');
+      if (DME && typeof DME.requestPermission === 'function') {
+        T.permCalls.push({ api: 'motion', userActive: navigator.userActivation ? navigator.userActivation.isActive : null });
+        p2 = DME.requestPermission();
+      }
+      const [o, m] = await Promise.all([p1, p2]);
+      T.permission = (o === 'granted' && m === 'granted') ? 'granted' : 'denied';
+    } catch (err) { T.permission = 'error'; T.permError = String(err); }
+    if (T.permission === 'granted') listen(); else enableTouch('permission-' + T.permission);
+  });
+  render();
+})();
+</script></body></html>

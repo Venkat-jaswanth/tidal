@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>editor — mock</title>
+<style>
+  :root { --bg:#232427; --side:#1e1f22; --bar:#1a1b1d; --line:#2e2f33; --text:#9a9ca1; --dim:#62646a; --sel:#2b2c30; --k:#8f9bb3; --s:#8fa598; --n:#b3a58a; --c:#5f6268; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font:13px/1.55 ui-monospace,'SF Mono',Menlo,monospace; }
+  .app { display:grid; grid-template-columns:200px 1fr; grid-template-rows:1fr 24px; height:100vh; }
+  .tree { background:var(--side); border-right:1px solid var(--line); padding:12px 0; grid-row:1; }
+  .tree h2 { margin:0 14px 8px; font-size:11px; font-weight:400; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  .tree div { padding:2px 14px; color:var(--text); }
+  .tree .sel { background:var(--sel); }
+  .tree .dir { color:var(--dim); }
+  .main { display:flex; flex-direction:column; min-width:0; grid-row:1; }
+  .tabs { display:flex; background:var(--bar); border-bottom:1px solid var(--line); height:34px; }
+  .tabs span { padding:7px 16px; color:var(--dim); border-right:1px solid var(--line); }
+  .tabs .on { background:var(--bg); color:var(--text); }
+  .code { flex:1; display:grid; grid-template-columns:52px 1fr; overflow:hidden; padding-top:8px; }
+  .ln { text-align:right; padding-right:14px; color:var(--dim); user-select:none; white-space:pre; }
+  pre { margin:0; font:inherit; white-space:pre; overflow:hidden; }
+  .k { color:var(--k); } .s { color:var(--s); } .n { color:var(--n); } .c { color:var(--c); }
+  .status { grid-column:1 / 3; grid-row:2; display:flex; justify-content:space-between; padding:3px 14px; background:var(--bar); border-top:1px solid var(--line); color:var(--dim); font-size:11px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="tree">
+    <h2>Files</h2>
+    <div class="dir">src</div>
+    <div>&nbsp;&nbsp;grid.ts</div>
+    <div class="sel">&nbsp;&nbsp;timeline.ts</div>
+    <div>&nbsp;&nbsp;canvas.ts</div>
+    <div>&nbsp;&nbsp;colors.ts</div>
+    <div>&nbsp;&nbsp;layout.ts</div>
+    <div>&nbsp;&nbsp;main.ts</div>
+    <div class="dir">docs</div>
+    <div>&nbsp;&nbsp;notes.md</div>
+    <div>package.json</div>
+    <div>tsconfig.json</div>
+  </nav>
+  <section class="main">
+    <div class="tabs"><span>notes.md</span><span class="on">timeline.ts</span><span>grid.ts</span></div>
+    <div class="code">
+<div class="ln">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41</div>
+<pre><span class="c">// Draws a square grid onto a 2D canvas.</span>
+
+<span class="k">export interface</span> GridOptions {
+  step: <span class="k">number</span>;
+  majorEvery: <span class="k">number</span>;
+  minorColor: <span class="k">string</span>;
+  majorColor: <span class="k">string</span>;
+}
+
+<span class="k">const</span> defaults: GridOptions = {
+  step: <span class="n">24</span>,
+  majorEvery: <span class="n">5</span>,
+  minorColor: <span class="s">'#2c2d31'</span>,
+  majorColor: <span class="s">'#3a3b40'</span>,
+};
+
+<span class="k">function</span> line(ctx: CanvasRenderingContext2D, x0: <span class="k">number</span>, y0: <span class="k">number</span>, x1: <span class="k">number</span>, y1: <span class="k">number</span>): <span class="k">void</span> {
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+}
+
+<span class="k">export function</span> drawGrid(ctx: CanvasRenderingContext2D, width: <span class="k">number</span>, height: <span class="k">number</span>, options: Partial&lt;GridOptions&gt; = {}): <span class="k">void</span> {
+  <span class="k">const</span> o = { ...defaults, ...options };
+  ctx.lineWidth = <span class="n">1</span>;
+  <span class="k">for</span> (<span class="k">let</span> i = <span class="n">0</span>, x = <span class="n">0</span>; x &lt;= width; x += o.step, i++) {
+    ctx.strokeStyle = i % o.majorEvery === <span class="n">0</span> ? o.majorColor : o.minorColor;
+    line(ctx, x + <span class="n">0.5</span>, <span class="n">0</span>, x + <span class="n">0.5</span>, height);
+  }
+  <span class="k">for</span> (<span class="k">let</span> j = <span class="n">0</span>, y = <span class="n">0</span>; y &lt;= height; y += o.step, j++) {
+    ctx.strokeStyle = j % o.majorEvery === <span class="n">0</span> ? o.majorColor : o.minorColor;
+    line(ctx, <span class="n">0</span>, y + <span class="n">0.5</span>, width, y + <span class="n">0.5</span>);
+  }
+}
+
+<span class="c">// Number of whole cells that fit along one axis.</span>
+<span class="k">export const</span> cellsAcross = (length: <span class="k">number</span>, step: <span class="k">number</span>): <span class="k">number</span> =&gt; Math.floor(length / step);
+</pre>
+    </div>
+  </section>
+  <footer class="status"><span>main</span><span>TypeScript &nbsp; UTF-8 &nbsp; LF &nbsp; Ln 1, Col 1</span></footer>
+</div>
+</body>
+</html>

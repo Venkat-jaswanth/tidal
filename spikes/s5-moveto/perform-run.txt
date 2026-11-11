@@ -1,0 +1,16 @@
+performing with 3 vessels; stage {"w":1920,"h":1050,"left":-219,"top":-1050}
+volume by slot every 2 s:
+  t=2s {"ml":[0,633,190,177,0],"rain":0,"total":1000,"performing":true}
+  t=4s {"ml":[0,534,239,227,0],"rain":0,"total":1000,"performing":true}
+  t=6s {"ml":[0,578,195,227,0],"rain":0,"total":1000,"performing":true}
+  t=8s {"ml":[0,748,25,227,0],"rain":0,"total":1000,"performing":true}
+  t=10s {"ml":[0,759,14,227,0],"rain":0,"total":1000,"performing":true}
+  t=12s {"ml":[0,956,14,30,0],"rain":0,"total":1000,"performing":true}
+  t=14s {"ml":[0,966,14,21,0],"rain":0,"total":1000,"performing":true}
+  t=16s {"ml":[0,966,14,21,0],"rain":0,"total":1000,"performing":true}
+  t=18s {"ml":[177,376,141,306,0],"rain":0,"total":1000,"performing":false}
+total min/max 1000 1000
+popup0 {"moves":73,"moveHzMedian":60,"moveHzP5":55,"worstMoveGapMs":18,"fps":60,"frameMsP50":16.7,"frameMsP95":18,"worstFrameMs":23,"leader":false,"end":{"x":461,"y":-520,"w":560,"h":520}}
+popup1 {"moves":326,"moveHzMedian":60,"moveHzP5":30,"worstMoveGapMs":116,"fps":60,"frameMsP50":16.7,"frameMsP95":18,"worstFrameMs":23,"leader":false,"end":{"x":131,"y":-330,"w":330,"h":330}}
+popup2 {"moves":270,"moveHzMedian":60,"moveHzP5":32,"worstMoveGapMs":85,"fps":60,"frameMsP50":16.7,"frameMsP95":18.1,"worstFrameMs":23,"leader":false,"end":{"x":1021,"y":-330,"w":330,"h":330}}
+main {"leader":true,"active":true,"simGpuMs":7.340032}

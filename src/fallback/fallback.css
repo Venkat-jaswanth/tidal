@@ -1,0 +1,243 @@
+/* The no-WebGPU page. Everything is scoped to html[data-gpu="no"] / .tfb, so bundling this file with
+   the app changes nothing until showFallback() runs. */
+
+html[data-gpu='no'] {
+  --tfb-field: #f1eee6;
+  --tfb-fine: rgba(147, 161, 176, 0.24);
+  --tfb-major: rgba(123, 138, 154, 0.4);
+  --tfb-ink: #2a2d32;
+  /* Quiet text is graphite at 82 %: 7.0:1 on the paper and still 4.7:1 where a major line crosses it.
+     55 % would be 3.2:1, below AA for 9–13 px text. */
+  --tfb-quiet: #4e5052;
+  --tfb-frame: #2a2d32;
+  --tfb-select: rgba(42, 45, 50, 0.16);
+  --tfb-label: 400 11px/16px 'B612', 'Helvetica Neue', Arial, sans-serif;
+  color-scheme: light;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+  background: var(--tfb-field);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-gpu='no'] {
+    --tfb-field: #0b0d0f;
+    --tfb-fine: rgba(61, 87, 83, 0.16);
+    --tfb-major: rgba(95, 138, 130, 0.26);
+    --tfb-ink: #c9f2e6;
+    /* the safelight green at 61 % over the field: 6.4:1, 4.6:1 on a major line */
+    --tfb-quiet: #7f9992;
+    --tfb-frame: rgba(201, 242, 230, 0.42);
+    --tfb-select: rgba(201, 242, 230, 0.2);
+    color-scheme: dark;
+  }
+}
+
+/* On a 1x screen a 0.6 px stop still paints a whole pixel; trade width for alpha so the ruling weighs
+   what the renderer's anti-aliased lines weigh. */
+@media (max-resolution: 1.49dppx), (-webkit-max-device-pixel-ratio: 1.49) {
+  html[data-gpu='no'] {
+    --tfb-fine: rgba(147, 161, 176, 0.15);
+    --tfb-major: rgba(123, 138, 154, 0.32);
+  }
+}
+@media (max-resolution: 1.49dppx) and (prefers-color-scheme: dark), (-webkit-max-device-pixel-ratio: 1.49) and (prefers-color-scheme: dark) {
+  html[data-gpu='no'] {
+    --tfb-fine: rgba(61, 87, 83, 0.1);
+    --tfb-major: rgba(95, 138, 130, 0.21);
+  }
+}
+
+html[data-gpu='no'] body {
+  height: auto;
+  min-height: 100%;
+  margin: 0;
+  overflow: visible;
+  background: var(--tfb-field);
+}
+
+/* Whatever chrome the app mounted (or mounts later) stays out of the way. */
+html[data-gpu='no'] body > :not(.tfb):not(script):not(style):not(link):not(template) {
+  display: none !important;
+}
+
+.tfb {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  /* centre-left: the column's left edge sits at 40 % of the width minus half the column */
+  padding-inline: max(24px, calc(40vw - 280px)) 24px;
+  padding-inline: max(24px, env(safe-area-inset-left, 0px), calc(40vw - 280px)) max(24px, env(safe-area-inset-right, 0px));
+  overflow-x: hidden;
+  overflow-x: clip;
+  color: var(--tfb-ink);
+  font: 400 15px/24px 'B612', 'Helvetica Neue', Arial, sans-serif;
+  font-kerning: normal;
+  /* Graph paper: a fine ruling every 8 px, a major line every 80 px. Each tile is one major cell, so
+     the ruling can be registered to the film frame (see fallback.ts) without a seam. */
+  background-color: var(--tfb-field);
+  background-image:
+    repeating-linear-gradient(90deg, var(--tfb-major) 0 0.8px, transparent 0.8px 80px),
+    repeating-linear-gradient(180deg, var(--tfb-major) 0 0.8px, transparent 0.8px 80px),
+    repeating-linear-gradient(90deg, var(--tfb-fine) 0 0.6px, transparent 0.6px 8px),
+    repeating-linear-gradient(180deg, var(--tfb-fine) 0 0.6px, transparent 0.6px 8px);
+  background-size: 80px 80px;
+  background-position: var(--tfb-gx, 0px) var(--tfb-gy, 0px);
+}
+
+.tfb ::selection {
+  background: var(--tfb-select);
+}
+
+.tfb-main {
+  align-self: center;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 560px;
+  padding-block: 64px 48px;
+}
+
+.tfb-label,
+.tfb-link,
+.tfb-film-label,
+.tfb-foot {
+  font: var(--tfb-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tfb-label {
+  margin: 0;
+}
+
+.tfb-title {
+  margin: 24px 0 0;
+  font: 400 clamp(28px, 4.2vw, 44px) / 1.12 'B612', 'Helvetica Neue', Arial, sans-serif;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+.tfb-nowrap {
+  white-space: nowrap;
+}
+
+/* zero-size marks on a line's baseline, measured by fallback.ts to seat the text on the ruling */
+.tfb-probe {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  vertical-align: baseline;
+}
+
+.tfb-film {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 40px 0 0;
+  border: 1px solid var(--tfb-frame);
+  background: var(--tfb-field);
+  overflow: hidden;
+}
+
+.tfb-film-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--tfb-quiet);
+}
+
+.tfb-poster,
+.tfb-video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--tfb-field);
+}
+
+/* Nothing media-shaped shows until it has proven it can draw: no broken-image or broken-video chrome. */
+.tfb-poster {
+  visibility: hidden;
+}
+.tfb-film[data-poster='yes'] .tfb-poster {
+  visibility: visible;
+}
+.tfb-video {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 240ms ease-out, visibility 0s linear 240ms;
+}
+.tfb-film[data-video='yes'] .tfb-video {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 240ms ease-out, visibility 0s;
+}
+
+.tfb-need {
+  max-width: 60ch;
+  margin: 24px 0 0;
+  text-wrap: pretty;
+}
+
+.tfb-error {
+  max-width: 60ch;
+  margin: 8px 0 0;
+  color: var(--tfb-quiet);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.tfb-link {
+  display: inline-block;
+  margin: 18px 0 0 -4px;
+  padding: 6px 4px;
+  color: var(--tfb-ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  -webkit-text-decoration-color: transparent;
+  text-decoration-color: transparent;
+  -webkit-tap-highlight-color: transparent;
+  transition: text-decoration-color 140ms ease-out, -webkit-text-decoration-color 140ms ease-out;
+}
+.tfb-link:hover,
+.tfb-link:focus-visible {
+  -webkit-text-decoration-color: currentColor;
+  text-decoration-color: currentColor;
+}
+.tfb-link:focus {
+  outline: none;
+}
+.tfb-link:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
+.tfb-foot {
+  align-self: end;
+  width: 100%;
+  max-width: 560px;
+  margin: 0;
+  padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  color: var(--tfb-quiet);
+  font-size: 9px;
+  line-height: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tfb-video,
+  .tfb-film[data-video='yes'] .tfb-video,
+  .tfb-link {
+    transition: none;
+  }
+}

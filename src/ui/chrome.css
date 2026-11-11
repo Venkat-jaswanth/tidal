@@ -1,0 +1,247 @@
+/*
+ * Bench-M chrome. Injected as a <style> into every document that shows a vessel (main window, popups,
+ * picture-in-picture), so it must not depend on anything else on the page.
+ *
+ * Metrics used below (B612 / B612 Mono, per em): ascent 0.96, descent 0.25, cap height 0.76,
+ * mono advance 0.65. With line-height L and size S the baseline sits at (L - 1.21 S) / 2 + 0.96 S.
+ */
+
+.tc {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  color: var(--ink);
+  font: 400 10px/13px 'B612', ui-sans-serif, sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-kerning: normal;
+  font-synthesis: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Paper knock-out: keeps text legible when water or spray passes behind it. */
+.tc-knock {
+  background: var(--paper);
+  padding: 6px;
+}
+
+/* ---------------------------------------------------------------- specimen label and readout */
+
+.tc-stack {
+  position: absolute;
+  left: 44px;
+  top: 18px;
+}
+
+.tc-label {
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.tc-readout {
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.tc-num {
+  font: 400 56px/56px 'B612 Mono', ui-monospace, monospace;
+  letter-spacing: 0;
+}
+
+/* "mL" is a unit: never uppercased, and lowercase is not tracked like capitals or it reads "m L". */
+.tc-unit {
+  margin-left: 2px;
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.tc[data-dark] .tc-num {
+  text-shadow: 0 0 14px color-mix(in srgb, var(--ink) 25%, transparent);
+}
+
+/* ---------------------------------------------------------------- graduation numerals */
+
+.tc-scale {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.tc-tick {
+  position: absolute;
+  left: 24px;
+  font: 400 9px/9px 'B612 Mono', ui-monospace, monospace;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--ink) 70%, transparent);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- controls and help, top right */
+
+.tc-side {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.tc-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 22px;
+  row-gap: 12px;
+}
+
+.tc-btn {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The box ends at the last glyph, not after its tracking: the row's right edge, the underline and the
+   focus ring all measure from ink. */
+.tc-btn > span,
+.tc-credit > span {
+  margin-right: -0.14em;
+}
+
+/* A comfortable hit area without moving anything. */
+.tc-btn::before {
+  content: '';
+  position: absolute;
+  inset: -9px -11px;
+}
+
+/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line). */
+.tc-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 14px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 140ms linear;
+}
+
+@media (hover: hover) {
+  .tc-btn:hover::after {
+    opacity: 1;
+  }
+}
+
+.tc-btn:focus-visible::after {
+  opacity: 1;
+}
+
+.tc-btn:focus {
+  outline: none;
+}
+
+.tc-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/* Toggles show their state by weight; B612's bold has the same advance widths, so nothing shifts. */
+.tc-btn[aria-pressed='true'] {
+  font-weight: 700;
+}
+
+/* Read like a menu: what it does on the left, the key flush right under the controls' right edge.
+   Dense flow pulls each <dd> back beside the <dt> that precedes it in the markup. */
+.tc-help {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-auto-flow: row dense;
+  column-gap: 24px;
+  row-gap: 6px;
+  margin: 0;
+}
+
+.tc-help dt,
+.tc-help dd {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.tc-help dt {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.tc-help dt > span {
+  margin-right: -0.14em;
+}
+
+.tc-help dd {
+  grid-column: 1;
+}
+
+/* ---------------------------------------------------------------- credit */
+
+.tc-credit {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  margin: 0;
+  font-size: 9px;
+  line-height: 11px;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- compact: picture-in-picture, small windows */
+
+.tc[data-compact] .tc-stack {
+  top: 12px;
+}
+
+.tc[data-compact] .tc-label {
+  font-size: 10px;
+  line-height: 13px;
+}
+
+.tc[data-compact] .tc-num {
+  font-size: 28px;
+  line-height: 28px;
+}
+
+.tc[data-compact] .tc-unit {
+  margin-left: 1px;
+  font-size: 9px;
+  line-height: 11px;
+}
+
+.tc[data-compact] .tc-num {
+  text-shadow: none;
+}
+
+.tc[data-compact] .tc-side,
+.tc[data-compact] .tc-credit {
+  display: none;
+}

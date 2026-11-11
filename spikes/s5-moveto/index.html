@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>S5 moveTo</title>
+<body style="margin:0;font:12px monospace"><button id="o0">o0</button><button id="o1">o1</button><button id="o2">o2</button><button id="otab">tab</button>
+<pre id="o"></pre>
+<script>
+window.fev = []; for (const n of ['focus','blur']) addEventListener(n, () => fev.push([n, Math.round(performance.now())]));
+const q = new URLSearchParams(location.search);
+const role = q.get('p');
+window.refs = [];
+if (!role) {
+  // ---------- opener ----------
+  const L = screen.availLeft, T = screen.availTop; window.L = L; window.T = T;
+  const spec = [[L+350,T+200],[L+750,T+200],[L+550,T+450]];
+  for (let i = 0; i < 3; i++) document.getElementById('o'+i).onclick = () => { refs[i] = window.open('index.html?p=' + i, 'p' + i, `popup,width=360,height=280,left=${spec[i][0]},top=${spec[i][1]}`); };
+  document.getElementById('otab').onclick = () => { refs.tab = window.open('index.html?p=tab', 'ptab'); };
+  window.opener_state = () => ({ focus: document.hasFocus(), vis: document.visibilityState });
+  window.run = (mode, secs, R = 150, period = 3000) => new Promise(res => {
+    const centers = [[L+400,T+350],[L+800,T+350],[L+600,T+470]];
+    const cmds = [[],[],[]]; const cost = []; const lagErr = [[],[],[]]; const frames = [];
+    const t0 = performance.now(); let prevCmd = [null,null,null]; let nSync = 0;
+    const focusBefore = refs.map(r => { try { return r.document.hasFocus(); } catch (e) { return null; } });
+    refs.slice(0,3).forEach(r => r.startLog());
+    function frame(ts) {
+      frames.push(ts);
+      const t = ts - t0;
+      for (let i = 0; i < 3; i++) {
+        const a = 2 * Math.PI * t / period + i * 2 * Math.PI / 3;
+        const x = Math.round(centers[i][0] + R * Math.cos(a)), y = Math.round(centers[i][1] + R * Math.sin(a));
+        // read-back of what the window currently has vs previous command (lag error)
+        if (prevCmd[i]) lagErr[i].push(Math.hypot(refs[i].screenX - prevCmd[i][0], refs[i].screenY - prevCmd[i][1]));
+        const c0 = performance.now();
+        refs[i].moveTo(x, y);
+        if (mode === 'resize') refs[i].resizeTo(360 + Math.round(60 * Math.sin(a)), 280 + Math.round(40 * Math.cos(a)));
+        const c1 = performance.now();
+        cost.push(c1 - c0);
+        cmds[i].push([performance.timeOrigin + c0, x, y]);
+        prevCmd[i] = [x, y];
+      }
+      if (ts - t0 < secs * 1000) requestAnimationFrame(frame);
+      else {
+        const logs = refs.slice(0,3).map(r => r.stopLog());
+        const focusAfter = refs.map(r => { try { return r.document.hasFocus(); } catch (e) { return null; } });
+        res({ cmds, cost, lagErr, frames, logs, focusBefore, focusAfter, openerFocus: document.hasFocus() });
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+} else {
+  // ---------- popup ----------
+  let log = [], frames = [], on = false, last = null;
+  function loop(ts) {
+    if (on) {
+      frames.push(ts);
+      const cur = [screenX, screenY, outerWidth, outerHeight];
+      if (!last || cur[0] !== last[0] || cur[1] !== last[1] || cur[2] !== last[2] || cur[3] !== last[3]) {
+        log.push([performance.timeOrigin + performance.now(), ...cur]); last = cur;
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  window.startLog = () => { log = []; frames = []; last = null; on = true; };
+  window.stopLog = () => { on = false; return { log, frames: frames.map(f => f + performance.timeOrigin), focus: document.hasFocus(), vis: document.visibilityState }; };
+  window.pos = () => [screenX, screenY, outerWidth, outerHeight, document.hasFocus()];
+}
+</script>

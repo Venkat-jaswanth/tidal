@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>S2 — state distribution</title></head>
+<body>
+<button id="open">open follower</button>
+<pre id="log"></pre>
+<script type="module">
+// Leader and follower in one page; ?role=follower for popups.
+// Compares A) SharedArrayBuffer handed to popups, B) per-window crops over BroadcastChannel,
+// and measures GPU readback latency on the leader.
+const role = new URLSearchParams(location.search).get('role') ?? 'leader';
+const now = () => performance.timeOrigin + performance.now();
+const CROP = 100 * 1024; // bytes per follower per frame (density + velocity + dye at 1/3 res is ~70 KB for 900x650)
+const R = (window.__s2 = { role, isolated: crossOriginIsolated, sab: null, bc: null, readback: null, raf: null });
+
+if (role === 'leader') {
+  const sab = new SharedArrayBuffer(8 * 16 + 3 * CROP);
+  const head = new Float64Array(sab, 0, 16);
+  const body = new Uint8Array(sab, 128);
+  const bc = new BroadcastChannel('s2');
+  const popups = [];
+  window.__popups = popups;
+  document.querySelector('#open').onclick = () => {
+    const i = popups.length;
+    const w = window.open('?role=follower', 'f' + i, `popup,width=420,height=320,left=${80 + i * 440},top=520`);
+    popups.push(w);
+    const give = () => { try { w.postMessage({ sab }, location.origin); R.sabPosted = true; } catch (e) { R.sabError = String(e); } };
+    w.addEventListener('load', give);
+    setTimeout(give, 800);
+  };
+  // GPU readback latency: copy a 300 KB buffer and map it, count frames until resolved
+  let device, src, pool = [], rb = [];
+  navigator.gpu.requestAdapter().then((a) => a.requestDevice()).then((d) => {
+    device = d;
+    src = d.createBuffer({ size: 3 * CROP, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  });
+  let frame = 0, sendBC = true, payload = new Uint8Array(CROP);
+  window.__setBC = (v) => { sendBC = v; };
+  const costs = [];
+  function tick() {
+    frame++;
+    const t0 = performance.now();
+    // A: write straight into shared memory
+    body.fill(frame & 255, 0, 3 * CROP);
+    head[1] = now();
+    Atomics.store(new Int32Array(sab, 0, 1), 0, frame);
+    const tA = performance.now();
+    // B: one message per follower, transferring a fresh buffer each
+    if (sendBC) for (let i = 0; i < 3; i++) { const buf = new Uint8Array(CROP); buf.set(payload); bc.postMessage({ to: i, frame, sent: now(), buf: buf.buffer }); }
+    const tB = performance.now();
+    costs.push([tA - t0, tB - tA]);
+    if (device) {
+      const buf = pool.pop() ?? device.createBuffer({ size: 3 * CROP, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, buf, 0, 3 * CROP);
+      device.queue.submit([enc.finish()]);
+      const f0 = frame, s0 = performance.now();
+      buf.mapAsync(GPUMapMode.READ).then(() => { rb.push([frame - f0, performance.now() - s0]); buf.unmap(); pool.push(buf); });
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  window.__report = () => {
+    const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+    const p95 = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length * 0.95)];
+    return {
+      isolated: crossOriginIsolated, frames: frame, sabPosted: R.sabPosted, sabError: R.sabError,
+      writeSabMs: med(costs.map((c) => c[0])), postBcMs: med(costs.map((c) => c[1])), postBcMsP95: p95(costs.map((c) => c[1])),
+      readbackFramesMed: med(rb.map((r) => r[0])), readbackFramesP95: p95(rb.map((r) => r[0])), readbackMsMed: med(rb.map((r) => r[1])), readbackMsP95: p95(rb.map((r) => r[1])),
+      poolSize: pool.length,
+    };
+  };
+} else {
+  let sab = null, head, lastFrame = 0;
+  const sabLag = [], sabSkips = [], bcLag = [], bcGaps = [];
+  let lastBcFrame = 0, bcBytes = 0, t0 = performance.now(), frames = 0;
+  window.addEventListener('message', (e) => { if (e.data.sab) { sab = e.data.sab; head = new Float64Array(sab, 0, 16); R.gotSab = sab instanceof SharedArrayBuffer; } });
+  const bc = new BroadcastChannel('s2');
+  const me = Number((window.name || 'f0').slice(1));
+  bc.onmessage = (e) => {
+    if (e.data.to !== me) return;
+    bcLag.push(now() - e.data.sent); bcBytes += e.data.buf.byteLength;
+    if (lastBcFrame) bcGaps.push(e.data.frame - lastBcFrame);
+    lastBcFrame = e.data.frame;
+  };
+  function tick() {
+    frames++;
+    if (sab) {
+      const f = Atomics.load(new Int32Array(sab, 0, 1), 0);
+      sabLag.push(now() - head[1]);
+      if (lastFrame) sabSkips.push(f - lastFrame);
+      lastFrame = f;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  window.__report = () => {
+    const med = (a) => a.length ? a.slice().sort((x, y) => x - y)[a.length >> 1] : null;
+    const p95 = (a) => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length * 0.95)] : null;
+    const secs = (performance.now() - t0) / 1000;
+    return {
+      isolated: crossOriginIsolated, gotSab: R.gotSab ?? false, rafHz: frames / secs,
+      sabLagMsMed: med(sabLag), sabLagMsP95: p95(sabLag), sabFrameStepMed: med(sabSkips), sabFrameStepP95: p95(sabSkips),
+      bcLagMsMed: med(bcLag), bcLagMsP95: p95(bcLag), bcFrameStepMed: med(bcGaps), bcFrameStepP95: p95(bcGaps), bcKBperFrame: bcLag.length ? bcBytes / bcLag.length / 1024 : 0,
+    };
+  };
+}
+</script>
+</body>
+</html>

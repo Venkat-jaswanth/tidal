@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>S4 PiP spike</title>
+<style>body{font:14px system-ui;padding:16px}button{font-size:18px;padding:12px 20px}pre{white-space:pre-wrap}</style></head>
+<body>
+<button id="open">Open PiP</button>
+<pre id="log"></pre>
+<script>
+const S = window.__s4 = {
+  pip: null, events: [], cnt: { opener: 0, pip: 0, render: 0 }, pos: [], posLast: null,
+  loopId: 0, err: null, pixel: null, lastPath: null, lastRaf: null, drawTest: null,
+  info: {},
+};
+const log = (m) => { S.events.push([Math.round(performance.now()), m]); };
+S.log = log;
+const WGSL = `
+struct U { t: f32, pad: f32, pad2: vec2<f32> };
+@group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>,3>(vec2(0.0,0.7), vec2(-0.7,-0.7), vec2(0.7,-0.7));
+  let c = cos(u.t); let s = sin(u.t);
+  let q = p[i]; return vec4(q.x*c - q.y*s, q.x*s + q.y*c, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> { return vec4(1.0, 0.2, 0.1, 1.0); }`;
+
+async function openPip() {
+  try {
+    const prev = S.pip;
+    const w = await documentPictureInPicture.requestWindow({ width: 360, height: 260 });
+    log('requestWindow resolved; prev.closed=' + (prev ? prev.closed : 'n/a') + ' same=' + (prev === w));
+    S.pip = w; S.info.openOk = true;
+    w.addEventListener('pagehide', () => log('pip pagehide'));
+    w.addEventListener('unload', () => log('pip unload'));
+    w.document.body.style.margin = '0';
+    w.document.body.style.background = '#123';
+    w.document.title = 'Tidal PiP';
+    // independent rAF counter in the PiP window
+    const tickP = () => { S.cnt.pip++; try { w.requestAnimationFrame(tickP); } catch {} };
+    w.requestAnimationFrame(tickP);
+    // independent counter + position poller in opener
+    const tickO = () => { S.cnt.opener++; samplePos(); requestAnimationFrame(tickO); };
+    if (!S._o) { S._o = true; requestAnimationFrame(tickO); }
+    return true;
+  } catch (e) { S.info.openErr = String(e); log('open err ' + e); return false; }
+}
+function samplePos() {
+  const w = S.pip; if (!w) return;
+  let v; try { v = [w.screenX, w.screenY, w.outerWidth, w.outerHeight, w.innerWidth, w.innerHeight]; } catch (e) { v = 'ERR ' + e; }
+  const k = JSON.stringify(v);
+  if (k !== S.posLast) { S.posLast = k; S.pos.push([Math.round(performance.now()), v]); }
+  S.posSamples = (S.posSamples || 0) + 1;
+}
+if ('documentPictureInPicture' in window) documentPictureInPicture.addEventListener('enter', () => log('dpip enter event'));
+document.getElementById('open').addEventListener('click', openPip);
+
+// path 'A': opener device; 'B': pip device. raf 'opener' | 'pip'
+S.setup = async (path, raf) => {
+  const w = S.pip; S.loopId++; const id = S.loopId; S.err = null;
+  S.cnt.render = 0; S.pixel = null; S.lastPath = path; S.lastRaf = raf;
+  try {
+    const gpuNav = path === 'A' ? navigator.gpu : w.navigator.gpu;
+    if (!gpuNav) throw new Error('no navigator.gpu for path ' + path);
+    const adapter = await gpuNav.requestAdapter();
+    const device = await adapter.requestDevice();
+    device.lost.then(i => log('device lost ' + i.message));
+    device.addEventListener?.('uncapturederror', e => { S.err = 'gpu err ' + e.error.message; });
+    let canvas = w.document.getElementById('c');
+    if (canvas) canvas.remove();
+    canvas = w.document.createElement('canvas'); canvas.id = 'c'; canvas.width = 360; canvas.height = 260;
+    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    w.document.body.appendChild(canvas);
+    const ctx = canvas.getContext('webgpu');
+    const format = gpuNav.getPreferredCanvasFormat();
+    ctx.configure({ device, format, alphaMode: 'opaque' });
+    const mod = device.createShaderModule({ code: WGSL });
+    const pipe = device.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' },
+      fragment: { module: mod, entryPoint: 'fs', targets: [{ format }] } });
+    const ubuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
+    const c2 = document.createElement('canvas'); c2.width = 360; c2.height = 260;
+    const x2 = c2.getContext('2d', { willReadFrequently: true });
+    const rafFn = raf === 'pip' ? (f) => w.requestAnimationFrame(f) : (f) => requestAnimationFrame(f);
+    const frame = (t) => {
+      if (id !== S.loopId) return;
+      device.queue.writeBuffer(ubuf, 0, new Float32Array([t / 1000, 0, 0, 0]));
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
+        clearValue: { r: 0.1, g: 0.4 + 0.3 * Math.sin(t / 500), b: 0.7, a: 1 }, loadOp: 'clear', storeOp: 'store' }] });
+      pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
+      device.queue.submit([enc.finish()]);
+      S.cnt.render++;
+      if (S.cnt.render % 30 === 5) {
+        try { x2.clearRect(0,0,360,260); x2.drawImage(canvas, 0, 0);
+          const corner = x2.getImageData(4, 4, 1, 1).data, center = x2.getImageData(180, 150, 1, 1).data;
+          S.pixel = { corner: [...corner], center: [...center], frame: S.cnt.render };
+        } catch (e) { S.pixel = { err: String(e) }; }
+      }
+      rafFn(frame);
+    };
+    rafFn(frame);
+    S.info['setup' + path + raf] = 'ok';
+    return 'ok';
+  } catch (e) { S.err = String(e); return 'ERR ' + e; }
+};
+S.stop = () => { S.loopId++; };
+</script></body></html>

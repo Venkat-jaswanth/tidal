@@ -1,7 +1,7 @@
 // WGSL for the 2D MLS-MPM (APIC) solver.
 // Units: lengths in grid cells, time in substeps (dt = 1), so velocities are cells per substep.
 
-export const MAX_RECTS = 16;
+export const MAX_RECTS = 24;
 export const CELL_STRIDE = 8; // i32 per cell: momentum x, momentum y, mass, dye r, dye g, dye b, unused, unused
 export const PARTICLE_BYTES = 64;
 
@@ -33,7 +33,8 @@ struct Particle {
   dye: vec3f,
   state: f32,   // 0 = live, > 0 = held as rain until this time (s)
   win: u32,     // owner window index
-  p0: u32, p1: u32, p2: u32,
+  density: f32, // gathered from the grid on the previous substep
+  p1: u32, p2: u32,
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -62,6 +63,21 @@ fn sdUnion(p: vec2f) -> vec2f {
   return vec2f(best, bi);
 }
 
+// Which vessel a point belongs to, given the rect nearest to it.
+fn ownerOf(pos: vec2f, ri: u32) -> u32 {
+  let r = P.rects[ri];
+  if (r.info.y < 0.5) { return u32(r.info.x); }
+  // inside a bridge: belongs to the nearest real vessel
+  var best = 1e9;
+  var owner = 0u;
+  for (var i = 0u; i < P.grid.w; i++) {
+    if (P.rects[i].info.y > 0.5) { continue; }
+    let d = sdBox(pos, P.rects[i].box);
+    if (d < best) { best = d; owner = u32(P.rects[i].info.x); }
+  }
+  return owner;
+}
+
 fn quadWeights(d: vec2f) -> array<vec2f, 3> {
   return array<vec2f, 3>(
     0.5 * (0.5 - d) * (0.5 - d),
@@ -77,6 +93,8 @@ fn hash(x: u32) -> u32 {
 }
 fn rand(x: u32) -> f32 { return f32(hash(x) >> 8u) / 16777216.0; }
 `;
+
+export const commonWGSL = common;
 
 export const clearWGSL = /* wgsl */ `${common}
 @group(0) @binding(2) var<storage, read_write> cells: array<i32>;
@@ -108,10 +126,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 `;
 
-export const p2g1WGSL = /* wgsl */ `${common}
+const p2g = (dye: boolean) => /* wgsl */ `${common}
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> cells: array<atomic<i32>>;
 
+// One scatter pass. The stress uses the density the particle gathered on the previous substep,
+// which saves a whole second pass over the particles.
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= P.grid.z) { return; }
@@ -120,52 +140,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let base = floor(p.pos);
   let w = quadWeights(p.pos - (base + 0.5));
   let C = mat2x2f(p.C.xy, p.C.zw);
-  for (var gx = 0; gx < 3; gx++) {
-    for (var gy = 0; gy < 3; gy++) {
-      let c = vec2i(base) + vec2i(gx - 1, gy - 1);
-      let ci = cellIndex(c);
-      if (ci < 0) { continue; }
-      let weight = w[gx].x * w[gy].y;
-      let dist = (vec2f(c) + 0.5) - p.pos;
-      let mv = weight * (p.vel + C * dist);
-      atomicAdd(&cells[ci + 0], enc(mv.x));
-      atomicAdd(&cells[ci + 1], enc(mv.y));
-      atomicAdd(&cells[ci + 2], enc(weight));
-      atomicAdd(&cells[ci + 3], enc(weight * p.dye.x));
-      atomicAdd(&cells[ci + 4], enc(weight * p.dye.y));
-      atomicAdd(&cells[ci + 5], enc(weight * p.dye.z));
-    }
-  }
-}
-`;
 
-export const p2g2WGSL = /* wgsl */ `${common}
-@group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
-@group(0) @binding(2) var<storage, read_write> cells: array<atomic<i32>>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= P.grid.z) { return; }
-  let p = particles[id.x];
-  if (p.state > 0.0) { return; }
-  let base = floor(p.pos);
-  let w = quadWeights(p.pos - (base + 0.5));
-
-  var density = 0.0;
-  for (var gx = 0; gx < 3; gx++) {
-    for (var gy = 0; gy < 3; gy++) {
-      let ci = cellIndex(vec2i(base) + vec2i(gx - 1, gy - 1));
-      if (ci < 0) { continue; }
-      density += dec(atomicLoad(&cells[ci + 2])) * w[gx].x * w[gy].y;
-    }
-  }
-  density = max(density, 1e-3);
+  let density = select(P.g.w, p.density, p.density > 1e-3);
   let volume = 1.0 / density;
   // Tait equation of state, clamped so the free surface does not clump.
   let pressure = max(-P.misc2.x, P.g.z * (pow(density / P.g.w, P.mat.y) - 1.0));
-  let C = mat2x2f(p.C.xy, p.C.zw);
-  let strain = C + transpose(C);
-  let stress = mat2x2f(-pressure, 0.0, 0.0, -pressure) + P.mat.x * strain;
+  let stress = mat2x2f(-pressure, 0.0, 0.0, -pressure) + P.mat.x * (C + transpose(C));
   let term = -volume * 4.0 * stress;
 
   for (var gx = 0; gx < 3; gx++) {
@@ -175,18 +155,36 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       if (ci < 0) { continue; }
       let weight = w[gx].x * w[gy].y;
       let dist = (vec2f(c) + 0.5) - p.pos;
-      let m = (term * dist) * weight;
-      atomicAdd(&cells[ci + 0], enc(m.x));
-      atomicAdd(&cells[ci + 1], enc(m.y));
+      let mv = weight * (p.vel + C * dist + term * dist);
+      atomicAdd(&cells[ci + 0], enc(mv.x));
+      atomicAdd(&cells[ci + 1], enc(mv.y));
+      atomicAdd(&cells[ci + 2], enc(weight));
+      ${dye ? `atomicAdd(&cells[ci + 3], enc(weight * p.dye.x));
+      atomicAdd(&cells[ci + 4], enc(weight * p.dye.y));
+      atomicAdd(&cells[ci + 5], enc(weight * p.dye.z));` : ''}
     }
   }
 }
 `;
 
+// Applied once when ink is poured in: each vessel's liquid takes that vessel's ink (dye.x is the mix between the two inks).
+export const recolorWGSL = /* wgsl */ `${common}
+@group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= P.grid.z) { return; }
+  particles[id.x].dye = vec3f(f32(particles[id.x].win % 2u), 0.0, 0.0);
+}
+`;
+
+export const p2gWGSL = p2g(false);
+export const p2gDyeWGSL = p2g(true);
+
 export const gridWGSL = /* wgsl */ `${common}
 @group(0) @binding(2) var<storage, read_write> cells: array<i32>;
 @group(0) @binding(3) var<storage, read_write> fieldA: array<vec4f>; // mass / rest density, velocity xy, speed
-@group(0) @binding(4) var<storage, read_write> fieldB: array<vec4f>; // dye rgb, unused
+@group(0) @binding(4) var<storage, read_write> fieldB: array<vec4f>; // dye mix, wall distance, owner, foam
 
 const BAND = 1.5;
 
@@ -198,7 +196,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (ci < 0) { return; }
   let fi = ci / i32(STRIDE);
   let mass = dec(cells[ci + 2]);
-  if (mass <= 0.0) {
+  if (mass <= 0.0 || c.x < 1 || c.y < 1 || c.x >= i32(P.grid.x) - 1 || c.y >= i32(P.grid.y) - 1) {
     fieldA[fi] = vec4f(0.0);
     fieldB[fi] = vec4f(0.0);
     return;
@@ -227,31 +225,27 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let sp = length(v);
   if (sp > P.mat.z) { v *= P.mat.z / sp; }
 
+  // Foam: made where the flow is fast and rotating, then lingers and fades over about half a second.
+  let gw = i32(P.grid.x);
+  let curl = 0.5 * ((fieldA[fi + 1].z - fieldA[fi - 1].z) - (fieldA[fi + gw].y - fieldA[fi - gw].y));
+  let churn = smoothstep(0.035, 0.16, abs(curl)) * smoothstep(0.1, 0.4, sp);
+  let foam = max(fieldB[fi].w * 0.9972, churn);
+
   cells[ci + 0] = enc(v.x);
   cells[ci + 1] = enc(v.y);
   fieldA[fi] = vec4f(mass / P.g.w, v, sp);
-  fieldB[fi] = vec4f(vec3f(dec(cells[ci + 3]), dec(cells[ci + 4]), dec(cells[ci + 5])) / mass, 0.0);
+  // dye mix, distance to the nearest wall and the owning vessel: particles deep inside read these
+  // instead of searching the vessel rects themselves
+  fieldB[fi] = vec4f(dec(cells[ci + 3]) / mass, s.x, f32(ownerOf(x, u32(s.y))), foam);
 }
 `;
 
 export const g2pWGSL = /* wgsl */ `${common}
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> cells: array<i32>;
-@group(0) @binding(5) var<storage, read_write> counters: array<atomic<u32>>; // per window, then [MAX_RECTS] = rain in transit
-
-fn ownerOf(pos: vec2f, ri: u32) -> u32 {
-  let r = P.rects[ri];
-  if (r.info.y < 0.5) { return u32(r.info.x); }
-  // inside a bridge: belongs to the nearest real vessel
-  var best = 1e9;
-  var owner = 0u;
-  for (var i = 0u; i < P.grid.w; i++) {
-    if (P.rects[i].info.y > 0.5) { continue; }
-    let d = sdBox(pos, P.rects[i].box);
-    if (d < best) { best = d; owner = u32(P.rects[i].info.x); }
-  }
-  return owner;
-}
+@group(0) @binding(4) var<storage, read_write> fieldB: array<vec4f>;
+@group(0) @binding(5) var<storage, read_write> counters: array<atomic<u32>>; // per window, [MAX_RECTS] = rain in transit, [MAX_RECTS + 1] = blow-ups,
+// then 16 slots of kinetic energy and 16 of wall impact, per owner (fixed point, x256)
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -289,8 +283,37 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (sp > P.mat.z) { v *= P.mat.z / sp; }
   p.vel = v;
   p.C = vec4f(B[0], B[1]) * 4.0;
+  // Density for the next substep's stress: what the grid holds here now, advanced by the
+  // continuity equation (trace of C is the velocity divergence). Using it un-advanced lags
+  // the pressure by a substep, which is unstable at any timestep.
+  p.density = massSum * clamp(1.0 - (p.C.x + p.C.w), 0.8, 1.25);
   p.pos += v;
   if (massSum > 1e-4) { p.dye = mix(p.dye, dyeSum / massSum, P.misc.z); }
+
+  // A non-finite position means the solver blew up: park the particle and count it.
+  if (!(abs(p.pos.x) < 1e6 && abs(p.pos.y) < 1e6)) {
+    let r0 = P.rects[0];
+    p.pos = (r0.box.xy + r0.box.zw) * 0.5;
+    p.vel = vec2f(0.0);
+    p.C = vec4f(0.0);
+    atomicAdd(&counters[MAX_RECTS + 1u], 1u);
+  }
+
+  // Deep inside a vessel there is nothing to clamp, and the grid already knows the owner.
+  let here = cellIndex(vec2i(floor(p.pos)));
+  var deep = vec4f(0.0);
+  if (here >= 0) { deep = fieldB[here / i32(STRIDE)]; }
+  if (deep.y < -2.5) {
+    if (massSum > 2.5 * P.g.w) {
+      let js = id.x * 4u + u32(P.misc.w);
+      p.pos += 0.25 * (vec2f(rand(js), rand(js + 1u)) - 0.5);
+    }
+    p.win = u32(deep.z);
+    particles[id.x] = p;
+    atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u);
+    atomicAdd(&counters[MAX_RECTS + 4u + min(p.win, 15u)], u32(dot(p.vel, p.vel) * 256.0));
+    return;
+  }
 
   // Keep the particle inside the union of vessels.
   let m = P.misc2.z;
@@ -322,14 +345,24 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       atomicAdd(&counters[MAX_RECTS], 1u);
       return;
     }
-    let lo = r.box.xy + m;
-    let hi = r.box.zw - m;
+    // Clamp with a little jitter: particles clamped to the same point would never separate again.
+    let js = id.x * 4u + u32(P.misc.w);
+    let lo = r.box.xy + m + 0.06 * vec2f(rand(js), rand(js + 1u));
+    let hi = r.box.zw - m - 0.06 * vec2f(rand(js + 2u), rand(js + 3u));
     let q = clamp(p.pos, lo, hi);
+    // a fast particle stopped by the glass is a slap: counted for the sound design
+    let hit = length(p.vel - r.vel.xy);
+    if (hit > 0.22 && any(q != p.pos)) { atomicAdd(&counters[MAX_RECTS + 20u + min(p.win, 15u)], u32(hit * 256.0)); }
     if (s.x > 0.0) { p.vel = r.vel.xy; p.C = vec4f(0.0); }
     p.pos = q;
+  } else if (massSum > 2.5 * P.g.w) {
+    // Badly over-packed: nudge so coincident particles can be pushed apart by pressure.
+    let js = id.x * 4u + u32(P.misc.w);
+    p.pos += 0.25 * (vec2f(rand(js), rand(js + 1u)) - 0.5);
   }
   p.win = ownerOf(p.pos, ri);
   particles[id.x] = p;
   atomicAdd(&counters[min(p.win, MAX_RECTS - 1u)], 1u);
+  atomicAdd(&counters[MAX_RECTS + 4u + min(p.win, 15u)], u32(dot(p.vel, p.vel) * 256.0));
 }
 `;

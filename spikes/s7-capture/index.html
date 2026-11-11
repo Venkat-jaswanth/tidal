@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>S7 — self capture</title>
+<style>html,body{margin:0;background:#f3f1ea;font:14px monospace}canvas{display:block;width:100vw;height:100vh}#label{position:fixed;left:12px;top:12px}</style></head>
+<body><canvas id="c"></canvas><div id="label">HTML LABEL 000</div><button id="go" style="position:fixed;right:12px;top:12px">record</button>
+<script type="module">
+const c = document.querySelector('#c'); const x = c.getContext('2d');
+let n = 0;
+function draw(t) { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; n++;
+  x.fillStyle = '#f3f1ea'; x.fillRect(0, 0, c.width, c.height);
+  x.fillStyle = '#1b4fd8'; x.fillRect((t / 4) % c.width, c.height / 2, 60, 60);
+  document.querySelector('#label').textContent = 'HTML LABEL ' + String(n).padStart(4, '0');
+  requestAnimationFrame(draw); }
+requestAnimationFrame(draw);
+async function record(kind, ms) {
+  let stream;
+  if (kind === 'tab') stream = await navigator.mediaDevices.getDisplayMedia({ preferCurrentTab: true, video: { frameRate: 60 }, audio: false });
+  else stream = c.captureStream(60);
+  const s = stream.getVideoTracks()[0].getSettings();
+  const mime = (kind === 'tab' ? ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'] : ['video/mp4;codecs=avc1.640033', 'video/webm;codecs=vp9', 'video/webm']).find((m) => MediaRecorder.isTypeSupported(m));
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16_000_000 });
+  const chunks = []; rec.ondataavailable = (e) => chunks.push(e.data);
+  const done = new Promise((r) => (rec.onstop = r));
+  rec.start(); await new Promise((r) => setTimeout(r, ms)); rec.stop(); await done;
+  stream.getTracks().forEach((t) => t.stop());
+  const buf = new Uint8Array(await new Blob(chunks).arrayBuffer());
+  let b = ''; for (let i = 0; i < buf.length; i += 32768) b += String.fromCharCode(...buf.subarray(i, i + 32768));
+  return { mime, settings: s, bytes: buf.length, b64: btoa(b) };
+}
+window.__record = record;
+document.querySelector('#go').onclick = async () => { try { window.__out = await record(window.__kind, 4000); } catch (e) { window.__out = { error: String(e) }; } };
+</script></body></html>

@@ -1,0 +1,60 @@
+<!doctype html><meta charset="utf-8"><title>S6 occlusion</title>
+<body style="margin:0;font:12px monospace;background:#123"><button id="go">go</button><div id="hud" style="color:#fff"></div>
+<script>
+const T0 = performance.timeOrigin;
+const nowE = () => T0 + performance.now();
+const B = { raf: new Map(), to: new Map(), iv: new Map(), mc: new Map(), bc: new Map() };
+const rafTs = []; const vis = []; const foc = []; let bcLat = [];
+const bump = (k) => { const b = Math.floor(nowE() / 100); const m = B[k]; m.set(b, (m.get(b) || 0) + 1); };
+const q = new URLSearchParams(location.search); const role = q.get('r') || 'main';
+document.title = role;
+// rAF
+(function f(ts) { rafTs.push(nowE()); bump('raf'); requestAnimationFrame(f); })(0);
+requestAnimationFrame(function f() { requestAnimationFrame(f); });
+// timers
+(function t() { bump('to'); setTimeout(t, 0); })();
+setInterval(() => bump('iv'), 10);
+let mcOn = false; const mc = new MessageChannel(); mc.port1.onmessage = () => { bump('mc'); if (mcOn) mc.port2.postMessage(0); };
+window.setMC = (on) => { const was = mcOn; mcOn = on; if (on && !was) mc.port2.postMessage(0); };
+document.addEventListener('visibilitychange', () => vis.push([nowE(), document.visibilityState]));
+addEventListener('focus', () => foc.push([nowE(), 'focus'])); addEventListener('blur', () => foc.push([nowE(), 'blur']));
+// broadcast
+const bc = new BroadcastChannel('s6');
+if (role === 'sender') { let seq = 0; setInterval(() => bc.postMessage({ seq: seq++, t: nowE() }), 10); }
+if (role === 'main') bc.onmessage = (e) => { if (e.data.lk) window.lkRecv = performance.now(); };
+else if (role !== 'sender') bc.onmessage = (e) => { bump('bc'); bcLat.push(nowE() - e.data.t); if (bcLat.length > 20000) bcLat.shift(); };
+// api
+window.prof = (a, b, w) => {
+  const n = Math.ceil((b - a) / w); const o = {};
+  for (const k of Object.keys(B)) { o[k] = new Array(n).fill(0); for (const [bin, c] of B[k]) { const t = bin * 100 + 50; const i = Math.floor((t - a) / w); if (i >= 0 && i < n) o[k][i] += c; } }
+  return o;
+};
+window.rafGaps = (a, b, min) => { const g = []; for (let i = 1; i < rafTs.length; i++) if (rafTs[i] >= a && rafTs[i - 1] <= b && rafTs[i] - rafTs[i - 1] > min) g.push([rafTs[i - 1], rafTs[i] - rafTs[i - 1]]); return g; };
+window.rafBetween = (a, b) => rafTs.filter(t => t >= a && t < b).length;
+window.events = () => ({ vis, foc, state: document.visibilityState, focus: document.hasFocus() });
+window.bcLatStats = () => { const s = [...bcLat].sort((x, y) => x - y); return { n: s.length, med: s[Math.floor(s.length / 2)], p95: s[Math.floor(s.length * .95)], max: s.at(-1) }; };
+window.now = nowE; window.stamp = () => { window.lkRecv = null; window.t0 = performance.now(); };
+window.pos = () => [screenX, screenY, outerWidth, outerHeight];
+// locks
+window.holdLock = (name) => { window.lockHeld = nowE(); navigator.locks.request(name, () => new Promise(() => {})); return new Promise(r => setTimeout(r, 50)); };
+window.waitLock = (name) => { window.lockWait = nowE(); window.lockAcq = null; navigator.locks.request(name, () => { window.lockAcq = nowE(); bc.postMessage({ lk: 1 }); return new Promise(() => {}); }); };
+// opening (from a real click)
+window.refs = {};
+document.getElementById('go').onclick = () => {
+  const r = window.__req; if (!r) return;
+  window.__req = null;
+  window.refs[r.name] = r.features ? window.open(r.url, r.name, r.features) : window.open(r.url, r.name);
+};
+</script>
+<script>
+// ---- RPC channel (used only by run-native.mjs, which serves this page itself); no-op under Vite/Playwright ----
+if (q.get('n') && location.port === '5199') {
+  const AF = Object.getPrototypeOf(async function () {}).constructor;
+  const es = new EventSource('/events?n=' + q.get('n'));
+  es.onmessage = async (m) => {
+    const { id, code } = JSON.parse(m.data); let res, err;
+    try { res = await new AF(code)(); } catch (e) { err = String(e); }
+    fetch('/report', { method: 'POST', body: JSON.stringify({ id, res, err }) });
+  };
+}
+</script>

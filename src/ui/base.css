@@ -1,0 +1,29 @@
+/* Page reset. --paper and --ink are set from the engine's theme by src/ui/chrome.ts; these are the
+   values before it runs, so the first paint already matches the colour scheme. */
+
+:root {
+  --paper: #f1eee6;
+  --ink: #2a2d32;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0b0d0f;
+    --ink: #c9f2e6;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+#tank {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
