@@ -5,15 +5,17 @@ import { loadWorld, saveWorld } from './net/persist';
 import { decodeSnapshot, encodeSnapshot } from './net/snapshot';
 import { Transport, type CropHeader, type FrameMeta, type Snapshot } from './net/transport';
 import { WATER_LOOK, type LiquidLook, type Theme } from './render/theme';
-import { WaterRenderer, type ViewState } from './render/water';
-import { CropPacker, type Crop } from './sim/crop';
+import { WaterRenderer, columnHeight, type Column, type ViewState } from './render/water';
+import { CropPacker, warmCropPipeline, type Crop } from './sim/crop';
 import type { Vessel } from './sim/domain';
-import { MpmSim, WATER, fillBlock, simPipelines, type Liquid } from './sim/mpm';
+import { MpmSim, WATER, fillBlock, warmSimPipelines, type Liquid } from './sim/mpm';
 import { Leadership } from './world/leader';
 import { Calibrator, Registry, claimSlot, clock, type VesselInfo } from './world/registry';
 
 export const CELL_PX = 6;
-export const SUBSTEP_HZ = 720;
+// 600 substeps a second with a squared sound speed of 0.5 is as stiff, in physical units, as 720 at 0.35,
+// for a sixth less GPU time. 540 at 0.62 breaks up into foam, so this is close to the limit.
+export const SUBSTEP_HZ = 600;
 export const PARTICLES = 100_000;
 export const WORLD_ML = 1000;
 const LOW_PARTICLES = 50_000;
@@ -26,6 +28,9 @@ const OUTSET = 1;            // cells the simulated vessel extends past the view
 export const REST_DENSITY_SCALE = 0.93;
 const SNAPSHOT_MS = 100;
 const PERSIST_MS = 2000;
+// Measured on the real solver: resting energy is about 3e-5, and a hard slosh slaps the glass at about 1.4e-3 raw.
+const ENERGY_FLOOR = 6e-5;
+const IMPACT_GAIN = 4;
 const STALL_MS = 700;         // a visible follower takes over after this long without a frame from the leader
 const SNAPSHOT_BROADCAST_MS = 500;
 
@@ -85,6 +90,14 @@ interface View {
   fieldTex: GPUTexture | null;
   fieldView: GPUTextureView | null;
   fieldHead: CropHeader | null;
+  /** The last two crops received, for blending when this window draws faster than the leader simulates. */
+  prev: { head: CropHeader; data: Uint8Array } | null;
+  curr: { head: CropHeader; data: Uint8Array; at: number } | null;
+  /** Smoothed time between crops, ms. */
+  cropInterval: number;
+  blend: Uint8Array | null;
+  /** Header of whatever is on the GPU now (a crop or a blend towards it). */
+  fieldHeadShown: CropHeader | null;
   ml: number;
   /** performance.now() of the last draw. */
   lastDraw: number;
@@ -146,6 +159,7 @@ export class Engine {
   private lastBlowFrame = -1;
   private wantThin = false;
   private lastLadder = 0;
+  private frameMs = 16.7;
 
   private lastFrame = 0;
   private frameTimes: number[] = [];
@@ -192,6 +206,18 @@ export class Engine {
   get slot(): number { return this.registry.self.slot; }
   get isLeader(): boolean { return this.leadership.isLeader; }
 
+  /** How the current liquid compresses under its own weight: see `columnHeight`. */
+  get column(): Column {
+    const ph = this.liquid.physics;
+    const g = Math.hypot(ph.gravityX, ph.gravityY) / (CELL_PX * SUBSTEP_HZ * SUBSTEP_HZ); // cells per substep²
+    return { a: (g * ph.eosPower) / ph.soundSpeed2 / CELL_PX, gamma: ph.eosPower };
+  }
+
+  /** Height in px at which a resting column of `ml` stands in a vessel `width` px wide. */
+  heightOfMl(ml: number, width: number): number {
+    return columnHeight((ml * PX2_PER_ML) / width, this.column);
+  }
+
   /**
    * Quality ladder (spec §6.9), applied in order when a window cannot keep its frame rate:
    * 1 fewer particles, 2 lower render resolution, 3 cheaper refraction, 4 no caustics, 5 no foam.
@@ -212,8 +238,9 @@ export class Engine {
   /** Step down a rung when the frame rate stays low. Called once a second with the last second's rate. */
   private ladder(fps: number): void {
     if (this.tierForced || this.tier >= 5 || document.visibilityState !== 'visible') return;
-    this.slowSeconds = fps > 1 && fps < 48 ? this.slowSeconds + 1 : 0;
-    if (this.slowSeconds >= 3) { this.slowSeconds = 0; this.setTier(this.tier + 1); }
+    // six slow seconds in a row, so a stall from a resize or a screenshot does not cost quality
+    this.slowSeconds = fps > 1 && fps < 45 ? this.slowSeconds + 1 : 0;
+    if (this.slowSeconds >= 6) { this.slowSeconds = 0; this.setTier(this.tier + 1); }
   }
   private slowSeconds = 0;
 
@@ -229,7 +256,12 @@ export class Engine {
       const out = new Uint8Array(count * 64);
       const src = new Uint8Array(bytes);
       for (let i = 0; i < count; i++) out.set(src.subarray(i * keep * 64, i * keep * 64 + 64), i * 64);
-      sim.setParticles(out.buffer, count, sim.restDensity * (count / sim.particleCount));
+      // each survivor now stands for more liquid: scale the rest density and the density every
+      // particle remembers by the same factor, so the pressure does not jump
+      const scale = count / sim.particleCount;
+      const f = new Float32Array(out.buffer);
+      for (let i = 0; i < count; i++) f[i * 16 + 13] = f[i * 16 + 13]! * scale;
+      sim.setParticles(out.buffer, count, sim.restDensity * scale);
     });
   }
   private thinned = false;
@@ -256,7 +288,7 @@ export class Engine {
     this.main = {
       info: this.registry.self, win: this.view, canvas: this.canvas, ctx,
       renderer: new WaterRenderer(this.device, this.format), cal: this.calibrator,
-      fieldTex: null, fieldView: null, fieldHead: null, ml: 0, lastDraw: 0,
+      fieldTex: null, fieldView: null, fieldHead: null, prev: null, curr: null, cropInterval: 0, blend: null, fieldHeadShown: null, ml: 0, lastDraw: 0,
     };
 
     const claim = await claimSlot();
@@ -268,8 +300,8 @@ export class Engine {
     this.leadership.onGain = () => this.becomeLeader();
     this.leadership.onLose = () => this.stopLeading();
     if (this.leadership.isLeader) this.becomeLeader();
-    // compile the solver ahead of time so a later promotion does not hitch
-    setTimeout(() => simPipelines(this.device), 400);
+    // compile everything a leader needs in the background, so a later promotion does not hitch
+    setTimeout(() => { void warmSimPipelines(this.device).catch(() => {}); void warmCropPipeline(this.device).catch(() => {}); }, 300);
 
     this.running = true;
     const loop = (now: number) => {
@@ -298,7 +330,7 @@ export class Engine {
       const next = this.liquids[c.value];
       if (next) this.liquid = next;
     } else if (c.cmd === 'impulse') {
-      this.impulse = [c.x, c.y, 8];
+      this.impulse = [c.x, c.y, 5];
     } else if (c.cmd === 'gravity') {
       this.gravity = [c.x, c.y];
     } else if (c.cmd === 'calm') {
@@ -420,7 +452,7 @@ export class Engine {
     const g = Math.hypot(physics.gravityX, physics.gravityY);
     physics.gravityX = this.gravity[0] * g; physics.gravityY = this.gravity[1] * g;
     if (this.impulse[2] > 0) {
-      physics.gravityX += this.impulse[0] * g * 2.2; physics.gravityY += this.impulse[1] * g * 2.2;
+      physics.gravityX += this.impulse[0] * g * 1.1; physics.gravityY += this.impulse[1] * g * 1.1;
       this.impulse[2]--;
     }
     if (this.calm) physics.damping = Math.min(physics.damping, 0.9982);
@@ -481,8 +513,16 @@ export class Engine {
     const impact = new Array<number>(16).fill(0);
     let rainMl = 0;
     if (st) {
-      const k = WORLD_ML / sim.particleCount;
-      for (let i = 0; i < 16; i++) { ml[i] = (st.counts[i] ?? 0) * k; energy[i] = st.energy[i] ?? 0; impact[i] = st.impact[i] ?? 0; }
+      // millilitres per counted particle, from the count itself: the vessels and the rain always add up to the world
+      let counted = st.rain;
+      for (const c of st.counts) counted += c;
+      const k = WORLD_ML / Math.max(1, counted);
+      for (let i = 0; i < 16; i++) {
+        ml[i] = (st.counts[i] ?? 0) * k;
+        // resting liquid still jitters a little: remove that floor so rest reads as exactly 0
+        energy[i] = Math.max(0, (st.energy[i] ?? 0) - ENERGY_FLOOR);
+        impact[i] = (st.impact[i] ?? 0) * IMPACT_GAIN;
+      }
       rainMl = st.rain * k;
       // liquid changing vessels: half the summed change, as a smoothed rate
       if (this.lastMl && st.frame !== this.lastMlFrame) {
@@ -496,13 +536,14 @@ export class Engine {
       this.stats.substeps = st.substeps;
     }
     this.stats.particles = sim.particleCount;
-    this.transport.sendMeta({
+    // nothing is published until the first counts are back, so no window ever shows a false 0 mL
+    if (st) this.transport.sendMeta({
       type: 'meta', leader: this.id, frame: this.frameNo, t: clock(),
       originX: this.originX, originY: this.originY, cellPx: CELL_PX, liquid: this.liquid.id,
       gravityX: this.gravity[0], gravityY: this.gravity[1],
       ml, rainMl, energy, impact, flow: this.flow,
     });
-    this.meta = this.transport.meta;
+    if (st) this.meta = this.transport.meta;
 
     // snapshots keep every window ready to take over
     const now = performance.now();
@@ -544,7 +585,7 @@ export class Engine {
       id: crypto.randomUUID(), slot: claim.slot, x: r.x, y: r.y, w: r.w, h: r.h, dpr: win.devicePixelRatio,
       visible: true, focused: false, kind, active: true, group: this.transport.group, t: clock(),
     };
-    const view: View = { info, win, canvas, ctx, renderer: new WaterRenderer(this.device, this.format), cal, fieldTex: null, fieldView: null, fieldHead: null, ml: 0, lastDraw: 0 };
+    const view: View = { info, win, canvas, ctx, renderer: new WaterRenderer(this.device, this.format), cal, fieldTex: null, fieldView: null, fieldHead: null, prev: null, curr: null, cropInterval: 0, blend: null, fieldHeadShown: null, ml: 0, lastDraw: 0 };
     this.registry.proxies.set(info.id, info);
     this.transport.listenFor(info.id, info.slot);
     this.extraViews.add(view);
@@ -611,13 +652,23 @@ export class Engine {
       cropY = this.originY + crop.cellY * CELL_PX;
     } else if (!this.sim || this.stalled) {
       const got = this.transport.takeCrop(info.slot);
-      if (got) this.upload(view, got.head, got.data);
+      const t = performance.now();
+      if (got) {
+        if (view.curr) {
+          const gap = t - view.curr.at;
+          view.cropInterval = view.cropInterval ? view.cropInterval + (gap - view.cropInterval) * 0.2 : gap;
+        }
+        view.prev = view.curr;
+        view.curr = { ...got, at: t };
+      }
+      this.present(view, t, got !== null);
       const m = this.meta;
-      if (view.fieldView && view.fieldHead && m) {
+      const shown = view.fieldHeadShown;
+      if (view.fieldView && shown && m) {
         field = view.fieldView;
         // anchor the crop to the vessel as it was simulated, so walls and liquid never separate
-        cropX = m.originX + view.fieldHead.cellX * CELL_PX - view.fieldHead.rectX + info.x;
-        cropY = m.originY + view.fieldHead.cellY * CELL_PX - view.fieldHead.rectY + info.y;
+        cropX = m.originX + shown.cellX * CELL_PX - shown.rectX + info.x;
+        cropY = m.originY + shown.cellY * CELL_PX - shown.rectY + info.y;
       }
     }
     const m = this.meta;
@@ -627,7 +678,7 @@ export class Engine {
     const state: ViewState = {
       originX: info.x, originY: info.y, width: w, height: h, dpr, time: now / 1000,
       cropX, cropY, cellPx: CELL_PX, px2PerMl: PX2_PER_ML,
-      gravityX: m?.gravityX ?? 0, gravityY: m?.gravityY ?? 1, tier: this.tier,
+      gravityX: m?.gravityX ?? 0, gravityY: m?.gravityY ?? 1, tier: this.tier, column: this.column,
     };
     const look = this.liquid.id === 'water' ? { ...this.liquid.look, ...this.theme.liquid } : this.liquid.look;
     view.renderer.draw(encoder, view.ctx.getCurrentTexture().createView(), field, state, this.theme, look);
@@ -643,7 +694,7 @@ export class Engine {
 
   private frame(now: number): void {
     const dt = this.lastFrame ? Math.min(0.034, (now - this.lastFrame) / 1000) : 1 / 60;
-    if (this.lastFrame) this.frameTimes.push(now - this.lastFrame);
+    if (this.lastFrame) { this.frameTimes.push(now - this.lastFrame); this.frameMs += (Math.min(50, now - this.lastFrame) - this.frameMs) * 0.1; }
     this.lastFrame = now;
     const cpu0 = performance.now();
 
@@ -690,6 +741,35 @@ export class Engine {
     for (const fn of this.frameListeners) fn(this);
   }
 
+  /**
+   * Puts the right field on the GPU for a follower. Normally that is the newest crop. When this
+   * window draws clearly faster than the leader simulates (a 120 Hz window following a 60 Hz
+   * leader), it blends from the previous crop to the newest by the leader's frame spacing, so the
+   * liquid moves on every frame instead of every other one.
+   */
+  private present(view: View, now: number, fresh: boolean): void {
+    const c = view.curr, p = view.prev;
+    if (!c) return;
+    const frameMs = this.frameMs || 16.7;
+    const same = p && p.head.width === c.head.width && p.head.height === c.head.height && p.head.cellX === c.head.cellX && p.head.cellY === c.head.cellY;
+    const consecutive = p && c.head.frame - p.head.frame === 1;
+    if (same && consecutive && typeof Float16Array !== 'undefined' && view.cropInterval > frameMs * 1.4 && view.cropInterval < 60) {
+      const a = Math.min(1, Math.max(0, (now - c.at + frameMs) / view.cropInterval));
+      if (a >= 1) { if (fresh || view.fieldHead !== c.head) this.upload(view, c.head, c.data); return; }
+      const n = c.data.byteLength;
+      if (!view.blend || view.blend.byteLength !== n) view.blend = new Uint8Array(n);
+      const out = new Float16Array(view.blend.buffer, 0, n / 2);
+      const from = new Float16Array(p.data.buffer, p.data.byteOffset, n / 2);
+      const to = new Float16Array(c.data.buffer, c.data.byteOffset, n / 2);
+      for (let i = 0; i < out.length; i++) out[i] = from[i]! + (to[i]! - from[i]!) * a;
+      this.upload(view, c.head, view.blend);
+      view.fieldHead = null; // a blend is on the GPU, not the crop itself
+      view.fieldHeadShown = c.head;
+      return;
+    }
+    if (fresh || view.fieldHead !== c.head) this.upload(view, c.head, c.data);
+  }
+
   private upload(view: View, head: CropHeader, data: Uint8Array): void {
     if (!view.fieldTex || view.fieldTex.width !== head.width || view.fieldTex.height !== head.height) {
       view.fieldTex?.destroy();
@@ -701,5 +781,6 @@ export class Engine {
     }
     this.device.queue.writeTexture({ texture: view.fieldTex }, data, { bytesPerRow: head.width * 8 }, [head.width, head.height]);
     view.fieldHead = head;
+    view.fieldHeadShown = head;
   }
 }

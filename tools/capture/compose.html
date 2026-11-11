@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tidal — compositor</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<style>
+  html, body { margin: 0; background: #0b0d0f; color: #c9f2e6; font: 12px/1.4 'B612 Mono', monospace; }
+  canvas { display: block; width: 960px; height: 540px; }
+  p { margin: 8px; }
+</style>
+</head>
+<body>
+<canvas id="out" width="1920" height="1080"></canvas>
+<p id="status">idle</p>
+<script type="module">
+// Offline, frame-exact compositor for the launch films. Driven by tools/capture/compose.mjs.
+// Every output frame k is drawn at film time T = t0 + k / fps: each window's rectangle comes from its
+// own position log at T, and its picture is the recorded frame that compose.mjs chose for T (the last
+// frame whose content was drawn at or before T). Nothing here comes from the screen: only the
+// recordings Tidal's windows made of themselves, screenshots of Tidal's own pages, and what this page
+// draws (the stage, the plain window frames, the redrawn labels).
+
+const out = document.querySelector('#out');
+const ctx = out.getContext('2d', { alpha: false });
+const status = document.querySelector('#status');
+let job = null;
+const media = new Map(); // window id -> { video | image }
+const shown = new Map(); // window id -> pts currently on the video element
+
+const FRAME = {
+  light: { bar: '#e9e6df', border: '#c9c5bc', text: '#55585d', dot: '#c4c0b7' },
+  dark: { bar: '#1a1d20', border: '#2c3035', text: '#9ea3a8', dot: '#3b4046' },
+};
+
+function lerp(a, b, u) { return a + (b - a) * u; }
+
+/** The window's rectangles at time t, from its log (linear between the two entries around t). */
+function poseAt(log, t) {
+  let lo = 0, hi = log.length - 1;
+  if (t <= log[0].t) return log[0];
+  if (t >= log[hi].t) return log[hi];
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (log[mid].t <= t) lo = mid; else hi = mid; }
+  const a = log[lo], b = log[hi];
+  const u = (t - a.t) / Math.max(1e-6, b.t - a.t);
+  return {
+    t, title: a.title, ml: a.ml, slot: a.slot,
+    x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), w: lerp(a.w, b.w, u), h: lerp(a.h, b.h, u),
+    outer: { x: lerp(a.outer.x, b.outer.x, u), y: lerp(a.outer.y, b.outer.y, u), w: lerp(a.outer.w, b.outer.w, u), h: lerp(a.outer.h, b.outer.h, u) },
+  };
+}
+
+function textsAt(texts, t) {
+  if (!texts || texts.length === 0) return null;
+  let lo = 0, hi = texts.length - 1;
+  if (t < texts[0].t) return texts[0].items;
+  while (hi > lo) { const mid = (lo + hi + 1) >> 1; if (texts[mid].t <= t) lo = mid; else hi = mid - 1; }
+  return texts[lo].items;
+}
+
+const toFrame = (x, y) => ({ x: (x - job.map.sx) * job.map.scale + job.map.ox, y: (y - job.map.sy) * job.map.scale + job.map.oy });
+
+function drawStage() {
+  ctx.fillStyle = '#0b0d0f';
+  ctx.fillRect(0, 0, out.width, out.height);
+  if (job.background !== 'stage') return;
+  // the stage page's own grid: 1 px lines every 80 px from its viewport's corner
+  const s = job.map.scale;
+  const o = toFrame(job.stageGrid.x, job.stageGrid.y);
+  const step = 80 * s;
+  ctx.fillStyle = 'rgba(95, 138, 130, 0.10)';
+  const x0 = o.x - Math.ceil(o.x / step) * step, y0 = o.y - Math.ceil(o.y / step) * step;
+  for (let x = x0; x < out.width; x += step) ctx.fillRect(Math.round(x), 0, Math.max(1, Math.round(s)), out.height);
+  for (let y = y0; y < out.height; y += step) ctx.fillRect(0, Math.round(y), out.width, Math.max(1, Math.round(s)));
+}
+
+/** A plain, generic window frame: flat title bar, 1 px border, title centred, three grey dots. No OS or browser artwork. */
+function drawFrame(win, outer, view, title) {
+  const pal = win.dark ? FRAME.dark : FRAME.light;
+  const s = job.map.scale;
+  const bar = Math.max(0, view.y - outer.y);
+  ctx.fillStyle = pal.bar;
+  ctx.fillRect(outer.x, outer.y, outer.w, bar);
+  if (bar > 0) {
+    const cy = outer.y + bar / 2;
+    ctx.fillStyle = pal.dot;
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(outer.x + (18 + i * 20) * s, cy, 6 * s, 0, Math.PI * 2); ctx.fill(); }
+    ctx.save();
+    ctx.beginPath(); ctx.rect(outer.x + 80 * s, outer.y, Math.max(0, outer.w - 160 * s), bar); ctx.clip();
+    ctx.fillStyle = pal.text;
+    ctx.font = `400 ${11 * s}px B612`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.letterSpacing = `${0.02 * 11 * s}px`;
+    ctx.fillText(title, outer.x + outer.w / 2, cy + 0.5);
+    ctx.restore();
+  }
+}
+
+function drawBorder(win, outer) {
+  const pal = win.dark ? FRAME.dark : FRAME.light;
+  ctx.strokeStyle = pal.border;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(outer.x + 0.5, outer.y + 0.5, outer.w - 1, outer.h - 1);
+}
+
+/**
+ * For a window whose own label is wrong (the floating tank's chrome reads the main window's numbers),
+ * the label line and the readout are set from the window's log: its slot and its volume. Layout,
+ * fonts and halo stay the page's own; "mL" moves with the readout's width.
+ */
+function relabel(items, entry) {
+  if (!items) return items;
+  const out = items.map((it) => ({ ...it }));
+  const label = out.find((it) => /^VESSEL\b/.test(it.text));
+  if (label && entry.slot != null && entry.slot >= 0) label.text = `VESSEL ${String(entry.slot + 1).padStart(2, '0')}`;
+  const num = out.filter((it) => /B612 Mono/.test(it.font)).sort((a, b) => b.size - a.size)[0];
+  if (num && entry.ml != null) {
+    const text = String(Math.max(0, Math.round(entry.ml)));
+    ctx.save();
+    ctx.font = num.font; ctx.letterSpacing = num.spacing;
+    const w = ctx.measureText(text).width;
+    ctx.restore();
+    const unit = out.find((it) => it.text === 'mL' && it.x >= num.x + num.w - 1 && Math.abs(it.y + it.h - (num.y + num.h)) < num.size);
+    if (unit) unit.x += w - num.w;
+    num.text = text; num.w = w;
+  }
+  return out;
+}
+
+/** Splits a computed text-shadow list into layers: { color, dx, dy, blur }. */
+function shadows(v) {
+  if (!v || v === 'none') return [];
+  const parts = [];
+  let depth = 0, cur = '';
+  for (const ch of v) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; } else cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts.map((p) => {
+    const m = p.match(/^(.*\))\s+(-?[\d.]+)px\s+(-?[\d.]+)px(?:\s+([\d.]+)px)?/) ?? p.match(/^(\S+)\s+(-?[\d.]+)px\s+(-?[\d.]+)px(?:\s+([\d.]+)px)?/);
+    return m ? { color: m[1], dx: Number(m[2]), dy: Number(m[3]), blur: Number(m[4] ?? 0) } : null;
+  }).filter(Boolean);
+}
+
+/**
+ * The window's HTML labels, which a canvas recording does not contain: each run of text at the
+ * rectangle the page measured for it, with the page's paper halo (its text shadows). B612 and B612
+ * Mono: ascent 0.96, descent 0.25 em.
+ */
+function drawTexts(items, view) {
+  if (!items) return;
+  const s = job.map.scale;
+  const OFF = 20000;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(view.x, view.y, view.w, view.h); ctx.clip();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fontKerning = 'normal';
+  for (const it of items) {
+    ctx.globalAlpha = it.alpha ?? 1;
+    ctx.font = it.font.replace(/(\d+(?:\.\d+)?)px/, (_, n) => `${Number(n) * s}px`);
+    ctx.letterSpacing = `${parseFloat(it.spacing) * s}px`;
+    const x = view.x + it.x * s;
+    const y = view.y + (it.y + (it.h - 1.21 * it.size) / 2 + 0.96 * it.size) * s;
+    // CSS paints the first shadow on top, all of them under the text
+    for (const sh of shadows(it.shadow).reverse()) {
+      ctx.shadowColor = sh.color;
+      ctx.shadowBlur = sh.blur * s;
+      ctx.shadowOffsetX = OFF + sh.dx * s;
+      ctx.shadowOffsetY = sh.dy * s;
+      ctx.fillStyle = '#000';
+      ctx.fillText(it.text, x - OFF, y);
+    }
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
+    ctx.fillStyle = it.color;
+    ctx.fillText(it.text, x, y);
+  }
+  ctx.restore();
+}
+
+async function seekOnce(win, v, target) {
+  win.lastMediaTime = NaN;
+  const presented = new Promise((resolve) => v.requestVideoFrameCallback((_, md) => { win.lastMediaTime = md.mediaTime; resolve(); }));
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`seek timeout ${win.id} ${target}`)), 15000);
+    v.addEventListener('seeked', () => { clearTimeout(timer); resolve(); }, { once: true });
+    v.currentTime = target;
+  });
+  // the seeked frame is drawable now; wait briefly for its presentation to confirm which frame it is
+  await Promise.race([presented, new Promise((r) => setTimeout(r, 250))]);
+}
+
+/** Puts the frame with timestamp `pts` on the video element; checks with requestVideoFrameCallback which frame it really is. */
+async function seek(win, pts, target, next) {
+  const v = media.get(win.id);
+  if (shown.get(win.id) === pts) return;
+  const right = () => Math.abs(win.lastMediaTime - pts) <= 0.0015;
+  await seekOnce(win, v, target);
+  // frames only a few ms apart: try other points of the frame's interval before giving up
+  for (const alt of [pts + 0.0001, pts + 0.001, (pts + next) / 2 + 0.0005, next - 0.0003]) {
+    if (right()) break;
+    win.retries = (win.retries ?? 0) + 1;
+    await seekOnce(win, v, alt);
+  }
+  shown.set(win.id, pts);
+  if (!right()) { win.mismatches = (win.mismatches ?? 0) + 1; win.lastMismatch = [pts, win.lastMediaTime]; }
+}
+
+async function drawAt(k) {
+  const T = job.t0 + (k * 1000) / job.fps;
+  drawStage();
+  const order = job.windows.slice().sort((a, b) => a.z - b.z);
+  for (const win of order) {
+    if (T < win.visibleFrom || T > win.visibleUntil) continue;
+    let pose, picture;
+    if (win.kind === 'image') {
+      pose = { ...win.view, outer: win.outer, title: win.title };
+      picture = media.get(win.id);
+    } else {
+      const pts = win.frames[k];
+      if (pts === null || pts === undefined || pts < 0) continue;
+      await seek(win, pts, win.seekTo[k], win.nextPts[k]);
+      pose = poseAt(win.log, T);
+      picture = media.get(win.id);
+    }
+    const s = job.map.scale;
+    // whole pixels keep the recorded picture sharp
+    const vo = toFrame(Math.round(pose.x), Math.round(pose.y));
+    const view = { x: Math.round(vo.x), y: Math.round(vo.y), w: Math.round(pose.w * s), h: Math.round(pose.h * s) };
+    let outer;
+    if (win.titleBar != null) {
+      const bar = Math.round(win.titleBar * s);
+      outer = { x: view.x, y: view.y - bar, w: view.w, h: view.h + bar };
+    } else {
+      const oo = toFrame(Math.round(pose.outer.x), Math.round(pose.outer.y));
+      outer = { x: Math.round(oo.x), y: Math.round(oo.y), w: Math.round(pose.outer.w * s), h: Math.round(pose.outer.h * s) };
+    }
+    drawFrame(win, outer, view, win.fixedTitle ?? pose.title);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(picture, view.x, view.y, view.w, view.h);
+    if (win.texts) drawTexts(win.relabel ? relabel(textsAt(win.texts, T), pose) : textsAt(win.texts, T), view);
+    drawBorder(win, outer);
+  }
+}
+
+async function load(url) {
+  const blob = await (await fetch(url)).blob();
+  return URL.createObjectURL(blob);
+}
+
+window.compose = {
+  async init(j) {
+    job = j;
+    out.width = j.width; out.height = j.height;
+    status.textContent = `loading ${j.name}`;
+    await Promise.all([
+      document.fonts.load('400 11px B612'), document.fonts.load('400 10px B612'), document.fonts.load('700 10px B612'),
+      document.fonts.load('400 28px "B612 Mono"'), document.fonts.load('400 56px "B612 Mono"'), document.fonts.load('400 9px "B612 Mono"'), document.fonts.load('700 9px "B612 Mono"'),
+    ]);
+    for (const win of j.windows) {
+      if (win.kind === 'image') {
+        const img = new Image();
+        img.src = await load(win.src);
+        await img.decode();
+        media.set(win.id, img);
+      } else {
+        const v = document.createElement('video');
+        v.muted = true; v.preload = 'auto'; v.playsInline = true;
+        v.src = await load(win.src);
+        await new Promise((resolve, reject) => { v.onloadeddata = resolve; v.onerror = () => reject(new Error(`cannot load ${win.src}`)); });
+        media.set(win.id, v);
+      }
+    }
+    status.textContent = `ready ${j.name}: ${j.frames} frames`;
+    return { fonts: document.fonts.check('11px B612') && document.fonts.check('28px "B612 Mono"') };
+  },
+  /** Draws frame k and returns it as base64 PNG. */
+  async frame(k) {
+    await drawAt(k);
+    const blob = await new Promise((r) => out.toBlob(r, 'image/png'));
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 32768) s += String.fromCharCode(...buf.subarray(i, i + 32768));
+    status.textContent = `frame ${k + 1} / ${job.frames}`;
+    return btoa(s);
+  },
+  stats() { return job.windows.map((w) => ({ id: w.id, mismatches: w.mismatches ?? 0, retries: w.retries ?? 0, last: w.lastMismatch ?? null })); },
+};
+</script>
+</body>
+</html>

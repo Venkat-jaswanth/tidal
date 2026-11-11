@@ -2,12 +2,12 @@
 // ?theme=bench|darkroom|millimetre  ?motion=rest|slosh|pour  ?freeze=<seconds>
 import { MpmSim, fillBlock } from '../../src/sim/mpm';
 import { CropPacker, type Crop } from '../../src/sim/crop';
-import { WaterRenderer, graduationStep } from '../../src/render/water';
+import { WaterRenderer, columnHeight, graduationStep } from '../../src/render/water';
 import { THEMES } from '../../src/render/theme';
 import { LIQUIDS } from '../../src/liquids';
 
 const q = new URLSearchParams(location.search);
-const CELL = 6, HZ = 720, N = Number(q.get('n') ?? 100000), PX2_PER_ML = 220;
+const CELL = 6, HZ = Number(q.get('hz') ?? 600), N = Number(q.get('n') ?? 100000), PX2_PER_ML = 220;
 const theme = THEMES[q.get('theme') ?? 'bench']!;
 const motion = q.get('motion') ?? 'rest';
 const freeze = Number(q.get('freeze') ?? Infinity);
@@ -31,10 +31,11 @@ function chrome() {
   const { tickMl, major } = graduationStep(innerWidth, PX2_PER_ML);
   const pxPerMl = PX2_PER_ML / innerWidth;
   const grads = document.querySelector('#grads')!;
-  for (let ml = tickMl * major; ml * pxPerMl < innerHeight - 70; ml += tickMl * major) {
+  const col = { a: (3200 / (CELL * HZ * HZ)) * 3 / 0.5 / CELL, gamma: 3 };
+  for (let ml = tickMl * major; columnHeight(ml * pxPerMl, col) < innerHeight - 70; ml += tickMl * major) {
     const d = document.createElement('div');
     d.className = 'grad num';
-    d.style.top = `${innerHeight - ml * pxPerMl}px`;
+    d.style.top = `${innerHeight - columnHeight(ml * pxPerMl, col)}px`;
     d.textContent = String(ml);
     grads.append(d);
   }
@@ -61,7 +62,7 @@ async function main() {
   const gridOriginX = viewX - PAD * CELL, gridOriginY = viewY - PAD * CELL;
   const sim = new MpmSim(device, { gridW, gridH, maxParticles: N, cellPx: CELL, substepHz: HZ });
   const liquid = LIQUIDS[q.get('liquid') ?? 'water']!;
-  sim.liquid = { ...liquid.physics, viscosity: Number(q.get('mu') ?? liquid.physics.viscosity), cohesion: Number(q.get('coh') ?? liquid.physics.cohesion) };
+  sim.liquid = { ...liquid.physics, viscosity: Number(q.get('mu') ?? liquid.physics.viscosity), cohesion: Number(q.get('coh') ?? liquid.physics.cohesion), soundSpeed2: Number(q.get('c2') ?? liquid.physics.soundSpeed2), eosPower: Number(q.get('gamma') ?? liquid.physics.eosPower) };
   sim.dye = liquid.id === 'ink';
   const rho0 = (Number(q.get('cal') ?? 0.93) * N * CELL * CELL) / (1000 * PX2_PER_ML);
   const OUTSET = Number(q.get('outset') ?? 1);
@@ -110,7 +111,7 @@ async function main() {
     renderer.draw(enc, ctx.getCurrentTexture().createView(), crop.view, {
       originX: viewX + ox, originY: viewY + oy, width: W, height: H, dpr, time: t,
       cropX: gridOriginX + crop.cellX * CELL, cropY: gridOriginY + crop.cellY * CELL,
-      cellPx: CELL, px2PerMl: PX2_PER_ML, gravityX: 0, gravityY: 1, tier: Number(q.get('tier') ?? 0),
+      cellPx: CELL, px2PerMl: PX2_PER_ML, gravityX: 0, gravityY: 1, tier: Number(q.get('tier') ?? 0), column: { a: (Math.hypot(sim.liquid.gravityX, sim.liquid.gravityY) / (CELL * HZ * HZ)) * sim.liquid.eosPower / sim.liquid.soundSpeed2 / CELL, gamma: sim.liquid.eosPower },
     }, theme, liquid.id === 'water' ? { ...liquid.look, ...theme.liquid } : liquid.look);
     device.queue.submit([enc.finish()]);
     requestAnimationFrame(frame);

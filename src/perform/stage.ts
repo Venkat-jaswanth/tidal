@@ -37,7 +37,7 @@ export function mountStage(doc: Document): void {
     .stage-note button:focus-visible { outline: 2px solid #c9f2e6; outline-offset: 3px; }
   `;
   doc.head.append(style);
-  doc.querySelector('#tank')?.remove();
+  doc.querySelector('#vessel')?.remove();
   const main = doc.createElement('main');
   const note = doc.createElement('p');
   note.className = 'stage-note';

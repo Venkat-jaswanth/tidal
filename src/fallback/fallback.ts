@@ -20,6 +20,7 @@ export function showFallback(doc: Document, reason: FallbackReason): void {
   ensureFonts(doc);
 
   doc.getElementById('tank')?.remove();
+  doc.getElementById('vessel')?.remove();
   doc.querySelector('.tfb')?.remove();
   for (const el of Array.from(doc.body.children)) {
     if (el instanceof HTMLElement && !/^(SCRIPT|STYLE|LINK|TEMPLATE)$/.test(el.tagName)) {

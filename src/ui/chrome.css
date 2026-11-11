@@ -4,17 +4,40 @@
  *
  * Metrics used below (B612 / B612 Mono, per em): ascent 0.96, descent 0.25, cap height 0.76,
  * mono advance 0.65. With line-height L and size S the baseline sits at (L - 1.21 S) / 2 + 0.96 S.
+ *
+ * Nothing here has a background. The text is printed on the glass and kept legible over paper and over
+ * any liquid by a knock-out: a tight halo of the theme's paper colour, built from text shadows centred on
+ * the glyphs. The first, unblurred layer sits exactly under each glyph, so text drawn at partial strength
+ * always mixes with paper, never with whatever liquid is behind it.
  */
 
 .tc {
+  /* text strengths: actions and the readout; settings and secondary facts; a quiet qualifier inside a setting */
+  --tc-ink-1: var(--ink);
+  --tc-ink-2: color-mix(in srgb, var(--ink) 72%, transparent);
+  /* about 2 px of solid paper around each stroke, fading out by 3 px: tight enough to read as print, not glow */
+  --tc-halo:
+    0 0 0 var(--paper),
+    0 0 1px var(--paper),
+    0 0 1.5px var(--paper),
+    0 0 2px var(--paper),
+    0 0 3px color-mix(in srgb, var(--paper) 60%, transparent);
+  /* the same knock-out scaled for the 56 px readout, whose strokes are five times as thick */
+  --tc-halo-lg:
+    0 0 0 var(--paper),
+    0 0 1px var(--paper),
+    0 0 2px var(--paper),
+    0 0 3px var(--paper),
+    0 0 5px color-mix(in srgb, var(--paper) 60%, transparent);
   position: fixed;
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  color: var(--ink);
+  color: var(--tc-ink-1);
   font: 400 10px/13px 'B612', ui-sans-serif, sans-serif;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  text-shadow: var(--tc-halo);
   font-kerning: normal;
   font-synthesis: none;
   -webkit-user-select: none;
@@ -23,24 +46,40 @@
   text-size-adjust: 100%;
 }
 
-/* Paper knock-out: keeps text legible when water or spray passes behind it. */
-.tc-knock {
-  background: var(--paper);
-  padding: 6px;
+/* Numbers set inside label lines: B612 Mono, tracked only a little so they read as one figure. */
+.tc-n {
+  font-family: 'B612 Mono', ui-monospace, monospace;
+  letter-spacing: 0.02em;
 }
 
-/* ---------------------------------------------------------------- specimen label and readout */
+/* "mL" is a unit: never uppercased, and lowercase is not tracked like capitals or it reads "m L". */
+.tc-u,
+.tc-unit {
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
 
+/* ---------------------------------------------------------------- specimen stack, top left */
+
+/* Each line is as wide as its text, so its right edge can be measured; chrome.ts sets each line's
+   left margin so the first glyph's ink, not its side bearing, starts on the 44 px edge. */
 .tc-stack {
   position: absolute;
   left: 44px;
   top: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .tc-label {
   font-size: 11px;
   line-height: 14px;
   white-space: nowrap;
+}
+
+.tc-quiet {
+  color: var(--tc-ink-2);
 }
 
 .tc-readout {
@@ -52,19 +91,30 @@
 .tc-num {
   font: 400 56px/56px 'B612 Mono', ui-monospace, monospace;
   letter-spacing: 0;
+  text-shadow: var(--tc-halo-lg);
 }
 
-/* "mL" is a unit: never uppercased, and lowercase is not tracked like capitals or it reads "m L". */
 .tc-unit {
-  margin-left: 2px;
   font-size: 11px;
   line-height: 14px;
-  letter-spacing: 0.04em;
-  text-transform: none;
 }
 
-.tc[data-dark] .tc-num {
-  text-shadow: 0 0 14px color-mix(in srgb, var(--ink) 25%, transparent);
+.tc-spec {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--tc-ink-2);
+  white-space: nowrap;
+}
+
+.tc-rain {
+  margin-top: 0;
+  transition: opacity 200ms linear;
+}
+
+/* Hidden but still in place, so the stack's height (and the graduation numerals below it) stay put. */
+.tc-rain[data-off] {
+  opacity: 0;
 }
 
 /* ---------------------------------------------------------------- graduation numerals */
@@ -86,22 +136,46 @@
 
 /* ---------------------------------------------------------------- controls and help, top right */
 
+/* The first row's baseline sits on the label's: 18 + 0.345 + 10.56 = 28.905 px, less the 10.05 px a
+   10/13 line puts above its baseline. The box stops 17 px from the edge so the ink of the last capital
+   (whose side bearing is about 0.09 em) stops at 18. */
 .tc-side {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 18.855px;
+  right: 17px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
 }
 
-.tc-controls {
+.tc-row {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   column-gap: 22px;
-  row-gap: 12px;
+  row-gap: 10px;
+}
+
+/* only when the actions are there: in a popup the settings are the first row, on the label's baseline */
+.tc-row:not([hidden]) + .tc-row {
+  margin-top: 10px;
+}
+
+.tc-row[hidden] {
+  display: none;
+}
+
+.tc-row-2 {
+  color: var(--tc-ink-2);
+}
+
+/* the name of a setting is quiet (still 5:1 on paper); its value is full ink */
+.tc-lead-quiet {
+  color: var(--tc-ink-2);
+}
+
+.tc-row-2 .tc-lead-quiet + .tc-value {
+  color: var(--tc-ink-1);
 }
 
 .tc-btn {
@@ -115,27 +189,35 @@
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
+  /* form controls reset text-shadow; the halo must reach the buttons too */
+  text-shadow: inherit;
   white-space: nowrap;
   cursor: pointer;
   pointer-events: auto;
   -webkit-tap-highlight-color: transparent;
 }
 
+.tc-btn[hidden] {
+  display: none;
+}
+
 /* The box ends at the last glyph, not after its tracking: the row's right edge, the underline and the
    focus ring all measure from ink. */
-.tc-btn > span,
-.tc-credit > span {
+.tc-btn > :last-child,
+.tc-credit > span,
+.tc-help dt > span {
   margin-right: -0.14em;
 }
 
-/* A comfortable hit area without moving anything. */
+/* A comfortable hit area without moving anything; rows are 23 px apart and columns 22 px, so
+   neighbouring areas meet without overlapping. */
 .tc-btn::before {
   content: '';
   position: absolute;
-  inset: -9px -11px;
+  inset: -5px -11px;
 }
 
-/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line). */
+/* 1 px underline, 4 px below the baseline (baseline sits at 10 px in a 13 px line), with its own halo. */
 .tc-btn::after {
   content: '';
   position: absolute;
@@ -144,6 +226,7 @@
   top: 14px;
   height: 1px;
   background: currentColor;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper) 70%, transparent);
   opacity: 0;
   transition: opacity 140ms linear;
 }
@@ -167,18 +250,17 @@
   outline-offset: 3px;
 }
 
-/* Toggles show their state by weight; B612's bold has the same advance widths, so nothing shifts. */
-.tc-btn[aria-pressed='true'] {
-  font-weight: 700;
+/* Read like a menu, right-aligned under the settings: what it does, then the key flush with the rows'
+   right edge. Dense flow pulls each <dd> back beside the <dt> that precedes it in the markup. */
+.tc-helpbox {
+  margin-top: 18px;
 }
 
-/* Read like a menu: what it does on the left, the key flush right under the controls' right edge.
-   Dense flow pulls each <dd> back beside the <dt> that precedes it in the markup. */
 .tc-help {
   display: grid;
   grid-template-columns: auto auto;
   grid-auto-flow: row dense;
-  column-gap: 24px;
+  column-gap: 18px;
   row-gap: 6px;
   margin: 0;
 }
@@ -194,24 +276,22 @@
   justify-self: end;
 }
 
-.tc-help dt > span {
-  margin-right: -0.14em;
-}
-
 .tc-help dd {
   grid-column: 1;
+  color: var(--tc-ink-2);
 }
 
 /* ---------------------------------------------------------------- credit */
 
+/* 70% ink on the light paper is 4.9:1. Like the controls, the ink (not the box) stops 18 px from the edge. */
 .tc-credit {
   position: absolute;
-  right: 12px;
-  bottom: 12px;
+  right: 17px;
+  bottom: 14px;
   margin: 0;
   font-size: 9px;
   line-height: 11px;
-  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  color: color-mix(in srgb, var(--ink) 70%, transparent);
   white-space: nowrap;
 }
 
@@ -226,22 +306,32 @@
   line-height: 13px;
 }
 
+.tc[data-compact] .tc-brand,
+.tc[data-compact] .tc-spec,
+.tc[data-compact] .tc-side,
+.tc[data-compact] .tc-credit {
+  display: none;
+}
+
+/* Only the vessel number is left, so it is the line's first voice. */
+.tc[data-compact] .tc-quiet {
+  color: var(--tc-ink-1);
+}
+
 .tc[data-compact] .tc-num {
   font-size: 28px;
   line-height: 28px;
+  text-shadow: var(--tc-halo);
 }
 
 .tc[data-compact] .tc-unit {
-  margin-left: 1px;
   font-size: 9px;
   line-height: 11px;
 }
 
-.tc[data-compact] .tc-num {
-  text-shadow: none;
-}
-
-.tc[data-compact] .tc-side,
-.tc[data-compact] .tc-credit {
-  display: none;
+@media (prefers-reduced-motion: reduce) {
+  .tc-rain,
+  .tc-btn::after {
+    transition: none;
+  }
 }

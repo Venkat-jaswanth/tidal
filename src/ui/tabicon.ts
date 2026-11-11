@@ -1,7 +1,7 @@
 // The tab is part of the piece: its title gives this vessel's volume and its favicon is a little beaker
 // filled to this vessel's level.
 
-import type { Engine } from '../engine';
+import { WORLD_ML, type Engine } from '../engine';
 import { rgb } from '../render/theme';
 import { isDark } from './dom';
 
@@ -79,7 +79,8 @@ export function mountTabIcon(doc: Document, engine: Engine): () => void {
   const onFrame = (e: Engine) => {
     if (!e.meta) return;
     const now = performance.now();
-    const ml = Math.round(e.ml);
+    // like the readout, never more than the world holds
+    const ml = Math.min(WORLD_ML, Math.max(0, Math.round(e.ml)));
     if (ml !== titleMl && now - titleAt >= MIN_INTERVAL_MS) {
       titleMl = ml;
       titleAt = now;

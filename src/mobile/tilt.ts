@@ -34,6 +34,7 @@ const EMIT_EPS = 0.004;
 const SHAKE_ONSET = 14;        // m/s², gravity removed
 const SHAKE_FULL = 40;         // m/s² that counts as the strongest shake
 const SHAKE_COOLDOWN_MS = 350;
+const SHAKE_REARM = 0.6;       // fraction of the onset the reading must drop below between shakes
 /** Time constant of the gravity estimate removed from accelerationIncludingGravity. */
 const GRAVITY_TRACK_MS = 200;
 /** A drag reaches full gravity at this fraction of the smaller viewport side. */
@@ -118,6 +119,7 @@ export function mountTilt(win: Window, onGravity: (x: number, y: number) => void
   let savedTouchAction: string | null = null;
 
   let lastShake = -Infinity;
+  let armed = true;
   let track: { lp: Vec3; prev: Vec3; t: number } | null = null;
 
   // ------------------------------------------------------------ output
@@ -149,9 +151,11 @@ export function mountTilt(win: Window, onGravity: (x: number, y: number) => void
       dir = [Math.cos(a), Math.sin(a)];
       target = t >= 1 ? [0, 1] : [dir[0] * m, dir[1] * m];
       if (t >= 1) { dir = [0, 1]; release = null; }
+      smooth = [target[0], target[1]];     // the ease is the smoothing: (0, 1) is reached at RELEASE_MS
+    } else {
+      const k = 1 - Math.exp(-dt / SMOOTH_MS);
+      smooth = [smooth[0] + (target[0] - smooth[0]) * k, smooth[1] + (target[1] - smooth[1]) * k];
     }
-    const k = 1 - Math.exp(-dt / SMOOTH_MS);
-    smooth = [smooth[0] + (target[0] - smooth[0]) * k, smooth[1] + (target[1] - smooth[1]) * k];
     const out = bounded(smooth, dir);
     state.gravity = out;
     if (dist(out, emitted) > EMIT_EPS) {
@@ -194,7 +198,10 @@ export function mountTilt(win: Window, onGravity: (x: number, y: number) => void
       mag = Math.hypot(v[0] - lp[0], v[1] - lp[1], v[2] - lp[2]);
       track = { lp, prev: v, t: now };
     }
-    if (mag > SHAKE_ONSET && now - lastShake >= SHAKE_COOLDOWN_MS) {
+    // An onset is a crossing: the reading must fall back (hysteresis) before the next one can count.
+    if (mag < SHAKE_ONSET * SHAKE_REARM) armed = true;
+    if (armed && mag > SHAKE_ONSET && now - lastShake >= SHAKE_COOLDOWN_MS) {
+      armed = false;
       lastShake = now;
       state.shakes++;
       onShake(Math.min(1, 0.25 + 0.75 * (mag - SHAKE_ONSET) / (SHAKE_FULL - SHAKE_ONSET)));
@@ -314,6 +321,7 @@ export function mountTilt(win: Window, onGravity: (x: number, y: number) => void
     pointer = null;
     release = null;
     track = null;
+    armed = true;
     state.mode = 'idle';
   }
 
@@ -325,7 +333,8 @@ export function mountTilt(win: Window, onGravity: (x: number, y: number) => void
 const LABEL_STYLE =
   "font:400 11px/1 'B612','Helvetica Neue',Arial,sans-serif;letter-spacing:0.14em;text-transform:uppercase;" +
   'position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom, 0px));transform:translateX(-50%);' +
-  'margin:0;padding:0 18px;min-height:44px;display:flex;align-items:center;white-space:nowrap;' +
+  // right padding gives back the trailing letter-spacing, so the label sits optically centred
+  'margin:0;padding:0 calc(18px - 0.14em) 0 18px;min-height:44px;display:flex;align-items:center;white-space:nowrap;' +
   'border:0;border-radius:0;z-index:10;-webkit-tap-highlight-color:transparent;transition:opacity 140ms ease-out;';
 
 /**
@@ -344,6 +353,7 @@ export function mountTiltPrompt(doc: Document, tilt: Tilt, theme: { ink: string;
   const later = (fn: () => void, ms: number): void => { timers.push(win ? win.setTimeout(fn, ms) : 0); };
   const fadeOut = (el: HTMLElement): void => {
     if (still) { el.remove(); return; }
+    el.inert = true;
     el.style.opacity = '0';
     later(() => el.remove(), 160);
   };
@@ -358,7 +368,7 @@ export function mountTiltPrompt(doc: Document, tilt: Tilt, theme: { ink: string;
     note = doc.createElement('p');
     note.setAttribute('role', 'status');
     note.style.cssText = LABEL_STYLE + colours + 'pointer-events:none;';
-    doc.body.append(note);
+    (doc.getElementById('vessel') ?? doc.body).append(note);
     const el = note;
     // filled a moment after insertion, so screen readers announce it
     later(() => { el.textContent = 'Motion is off. Drag to tilt.'; }, 30);
@@ -376,7 +386,7 @@ export function mountTiltPrompt(doc: Document, tilt: Tilt, theme: { ink: string;
       else later(() => { if (tilt.state.mode === 'touch') showNote(); }, FALLBACK_MS + 150);
     });
   });
-  doc.body.append(button);
+  (doc.getElementById('vessel') ?? doc.body).append(button);
 
   return () => {
     disposed = true;

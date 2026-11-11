@@ -440,7 +440,8 @@ export class SoundScene {
     const click = this.clicks[this.clicks.length - 1 - ((Math.random() * 2) | 0)]!;
     this.activeGlass++;
     this.slaps++;
-    playGlass(this.ctx, this.strip(s), t, base, G.bright * (0.6 + 0.4 * k), decay, level, G.partials, click, level * 0.6, this.glassEnded);
+    const tilt = 0.5 + 0.45 * G.bright * (0.6 + 0.4 * k);
+    playGlass(this.ctx, this.strip(s), t, base, tilt, decay, level, G.partials, click, level * 0.6, this.glassEnded);
   }
 
   private readonly glassEnded = (): void => { this.activeGlass--; };

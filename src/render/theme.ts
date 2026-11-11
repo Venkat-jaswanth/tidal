@@ -48,7 +48,7 @@ export const WATER_LOOK: LiquidLook = {
   absorb: [0.095, 0.024, 0.028],
   tint: '#bfe6ea', tintOpacity: 0, bodyOpacity: 0,
   refraction: 10, magnification: 1.09, dispersion: 0.06, caustics: 1,
-  meniscus: 11, mirror: 0.8, foam: 1,
+  meniscus: 16, mirror: 0.8, foam: 1,
 };
 
 export function rgb(hex: string): [number, number, number] {
@@ -61,7 +61,7 @@ export const BENCH: Theme = {
   name: 'bench',
   paper: '#f1eee6', gridStep: 8,
   gridFine: '#93a1b0', gridFineAlpha: 0.24,
-  gridBold: '#7b8a9a', gridBoldAlpha: 0.4, boldEvery: 10,
+  gridBold: '#7b8a9a', gridBoldAlpha: 0.34, boldEvery: 10,
   fineWidth: 0.6, boldWidth: 0.8, grain: 0.012,
   ink: '#2a2d32', inkAlpha: 0.78,
   highlight: '#ffffff', highlightStrength: 0.95, glow: 0,
@@ -75,8 +75,8 @@ export const DARKROOM: Theme = {
   gridBold: '#5f8a82', gridBoldAlpha: 0.26, boldEvery: 10,
   fineWidth: 0.6, boldWidth: 0.8, grain: 0.005,
   ink: '#c9f2e6', inkAlpha: 0.72,
-  highlight: '#eafff8', highlightStrength: 0.85, glow: 0.5,
-  liquid: { absorb: [0.04, 0.0, 0.0], tint: '#11302f', tintOpacity: 0.42, bodyOpacity: 0.07, caustics: 0.5, mirror: 0.5 },
+  highlight: '#eafff8', highlightStrength: 0.55, glow: 0.5,
+  liquid: { absorb: [0.05, 0.0, 0.0], tint: '#174a48', tintOpacity: 0.3, bodyOpacity: 0.07, caustics: 0.8, mirror: 0.4 },
 };
 
 /** Dense millimetre paper with a red index line every centimetre. */

@@ -17,7 +17,7 @@ declare global {
   interface Window {
     tidal?: Engine;
     /** Handles for tests and the capture tools. */
-    tidalApp?: { performer: Performer; audio: TidalAudio; float: () => FloatTank | null; vessels: () => Window[] };
+    tidalApp?: { performer: Performer; audio: TidalAudio; float: () => FloatTank | null; vessels: () => Window[]; sitOut: (out: boolean) => void };
   }
 }
 
@@ -106,7 +106,10 @@ async function main(): Promise<void> {
   let stage: Window | null = null;
   const stageOpen = (): boolean => !!stage && !stage.closed;
   // behind a stage the main window is covered, so it sits out and its liquid goes to the vessels in front
-  const restingActive = (): boolean => !(stageOpen() && engine.registry.all().some((v) => v.kind === 'popup'));
+  // `?inactive`, or tidalApp.sitOut(true), keeps this window out of the world (used when filming)
+  let sittingOut = query.has('inactive');
+  const restingActive = (): boolean => !sittingOut && !(stageOpen() && engine.registry.all().some((v) => v.kind === 'popup'));
+  engine.setActive(restingActive());
   setInterval(() => { if (!performer.performing) engine.setActive(restingActive()); }, 500);
 
   // ---- perform ----
@@ -114,8 +117,27 @@ async function main(): Promise<void> {
   performer.onChange = (performing) => set({ performing });
 
   // ---- sound ----
+  // Only the leader makes sound, and any window may become leader, so the switch is shared: every
+  // window turns its audio on or off together. A window that has had no gesture yet starts its
+  // audio on its next one.
   const audio = new TidalAudio(engine);
   engine.frameListeners.add(() => audio.update());
+  let wantSound = false;
+  const applySound = (on: boolean): void => {
+    wantSound = on;
+    if (on) void audio.enable().catch(() => {}).then(() => set({ sound: true }));
+    else { audio.disable(); set({ sound: false }); }
+  };
+  const setSound = (on: boolean): void => {
+    engine.registry.channel.postMessage({ type: 'sound', on });
+    applySound(on);
+  };
+  engine.registry.channel.addEventListener('message', (e: MessageEvent<{ type: string; on?: boolean }>) => {
+    if (e.data.type === 'sound') applySound(e.data.on === true);
+  });
+  for (const type of ['pointerdown', 'keydown'] as const) {
+    addEventListener(type, () => { if (wantSound) void audio.enable().catch(() => {}); }, { passive: true });
+  }
 
   // ---- float ----
   let tank: FloatTank | null = null;
@@ -153,10 +175,7 @@ async function main(): Promise<void> {
       engine.command({ type: 'cmd', cmd: 'liquid', value: next });
       set({ liquid: next });
     },
-    toggleSound: () => {
-      if (audio.enabled) { audio.disable(); set({ sound: false }); }
-      else void audio.enable().then(() => set({ sound: audio.enabled }));
-    },
+    toggleSound: () => setSound(!state.sound),
     spanScreens: () => {
       void requestSpan().then((r) => { spanning = r.ok; });
     },
@@ -175,10 +194,7 @@ async function main(): Promise<void> {
       engine.command({ type: 'cmd', cmd: 'liquid', value: next });
       set({ liquid: next });
     },
-    toggleSound: () => {
-      if (audio.enabled) { audio.disable(); set({ sound: false }); }
-      else void audio.enable().then(() => set({ sound: audio.enabled }));
-    },
+    toggleSound: () => setSound(!state.sound),
   };
 
   // another window may change the liquid: follow it
@@ -196,7 +212,11 @@ async function main(): Promise<void> {
     mountTiltPrompt(document, tilt, { ink: engine.theme.ink, paper: engine.theme.paper });
   }
 
-  window.tidalApp = { performer, audio, float: () => tank, vessels: liveVessels };
+  window.tidalApp = {
+    performer, audio, float: () => tank, vessels: liveVessels,
+    sitOut: (out: boolean) => { sittingOut = out; if (!performer.performing) engine.setActive(restingActive()); },
+  };
 }
 
+if (new URLSearchParams(location.search).has('capture')) void import('./capture/recorder');
 void main();

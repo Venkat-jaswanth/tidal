@@ -14,6 +14,7 @@ struct C { origin: vec2i, grid: vec2i, gravity: vec2f, cellPx: f32, ink: f32 }
 
 fn inGrid(p: vec2i) -> bool { return p.x >= 0 && p.y >= 0 && p.x < c.grid.x && p.y < c.grid.y; }
 fn a(p: vec2i) -> vec4f { if (!inGrid(p)) { return vec4f(0.0); } return fieldA[p.y * c.grid.x + p.x]; }
+fn a_(p: vec2i) -> f32 { return fieldA[p.y * c.grid.x + p.x].x; }
 // foam normally; with ink, the mix between the two inks weighted by how much liquid is there
 fn extraAt(p: vec2i) -> vec2f {
   if (!inGrid(p)) { return vec2f(0.0); }
@@ -45,15 +46,23 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   }
   let density = mix(blur, f.x, smoothstep(0.06, 0.3, f.w));
 
+  // Depth of liquid above this cell, averaged over a fan of directions around "up". A single
+  // straight column would print a hard vertical edge under every overhang.
   var depth = 0.0;
-  var gap = 0;
-  let dir = -c.gravity;
-  for (var k = 1; k < 200; k++) {
-    let q = p + vec2i(round(dir * f32(k)));
-    if (!inGrid(q)) { break; }
-    let cover = clamp((a(q).x - 0.25) * 2.0, 0.0, 1.0);
-    depth += cover;
-    if (cover < 0.05) { gap++; if (gap > 5) { break; } } else { gap = 0; }
+  let up = -c.gravity;
+  for (var a = -2; a <= 2; a++) {
+    let ang = f32(a) * 0.26;
+    let dir = vec2f(up.x * cos(ang) - up.y * sin(ang), up.x * sin(ang) + up.y * cos(ang));
+    var d = 0.0;
+    var gap = 0;
+    for (var k = 1; k < 150; k++) {
+      let q = p + vec2i(round(dir * f32(k)));
+      if (!inGrid(q)) { break; }
+      let cover = clamp((a_(q) - 0.25) * 2.0, 0.0, 1.0);
+      d += cover;
+      if (cover < 0.05) { gap++; if (gap > 5) { break; } } else { gap = 0; }
+    }
+    depth += d * (3.0 - abs(f32(a))) / 9.0;
   }
   // the part of this cell's own column above its centre
   depth += 0.5 * clamp((f.x - 0.25) * 2.0, 0.0, 1.0);
@@ -74,6 +83,19 @@ export interface Crop {
   group: GPUBindGroup;
 }
 
+const cropPipelines = new WeakMap<GPUDevice, GPUComputePipeline>();
+const cropDescriptor = (device: GPUDevice): GPUComputePipelineDescriptor => ({
+  label: 'crop', layout: 'auto',
+  compute: { module: device.createShaderModule({ label: 'crop', code: packWGSL }), entryPoint: 'main' },
+});
+
+/** Compiles the crop pipeline in the background, ahead of a possible promotion to leader. */
+export async function warmCropPipeline(device: GPUDevice): Promise<void> {
+  if (cropPipelines.has(device)) return;
+  const made = await device.createComputePipelineAsync(cropDescriptor(device));
+  if (!cropPipelines.has(device)) cropPipelines.set(device, made);
+}
+
 export class CropPacker {
   private readonly pipeline: GPUComputePipeline;
 
@@ -81,10 +103,9 @@ export class CropPacker {
     private readonly device: GPUDevice,
     private readonly sim: MpmSim,
   ) {
-    this.pipeline = device.createComputePipeline({
-      label: 'crop', layout: 'auto',
-      compute: { module: device.createShaderModule({ label: 'crop', code: packWGSL }), entryPoint: 'main' },
-    });
+    let pipeline = cropPipelines.get(device);
+    if (!pipeline) { pipeline = device.createComputePipeline(cropDescriptor(device)); cropPipelines.set(device, pipeline); }
+    this.pipeline = pipeline;
   }
 
   /** Returns a crop covering the rect (in cells), reusing `old` when its size still fits. */

@@ -5,7 +5,7 @@ import type { PourTone, SloshTone } from './liquids';
 import { Glide, clamp } from './params';
 
 /** Slosh level at full energy and a full vessel, before the master. */
-const SLOSH_GAIN = 0.45;
+const SLOSH_GAIN = 0.4;
 /** Pour level at the highest flow, before the master. */
 const POUR_GAIN = 0.6;
 
@@ -28,6 +28,7 @@ export class SloshVoice {
   private readonly gFloor: Glide;
   private readonly gAir: Glide;
   private readonly gBody: Glide;
+  private readonly gBodyFloor: Glide;
   private readonly gBodyAmp: Glide;
   private readonly gDepth: Glide;
   private readonly gDepthBody: Glide;
@@ -47,6 +48,8 @@ export class SloshVoice {
     air.type = 'lowpass'; air.frequency.value = 3200; air.Q.value = 0.5;
     const body = ctx.createBiquadFilter();
     body.type = 'bandpass'; body.frequency.value = 260; body.Q.value = 3.5;
+    const bodyFloor = ctx.createBiquadFilter();
+    bodyFloor.type = 'highpass'; bodyFloor.frequency.value = 130; bodyFloor.Q.value = 0.7;
     const bodyAmp = ctx.createGain();
     bodyAmp.gain.value = 1.6;
     const am = ctx.createGain();
@@ -54,7 +57,7 @@ export class SloshVoice {
     this.env = ctx.createGain();
     this.env.gain.value = 0;
     src.connect(bp).connect(floor).connect(air).connect(am);
-    src.connect(body).connect(bodyAmp).connect(am);
+    src.connect(body).connect(bodyFloor).connect(bodyAmp).connect(am);
     am.connect(this.env);
 
     const mod = ctx.createBufferSource();
@@ -77,6 +80,7 @@ export class SloshVoice {
     this.gFloor = new Glide(floor.frequency, 0.02, 1);
     this.gAir = new Glide(air.frequency, 0.02, 1);
     this.gBody = new Glide(body.frequency, 0.01, 1);
+    this.gBodyFloor = new Glide(bodyFloor.frequency, 0.02, 1);
     this.gBodyAmp = new Glide(bodyAmp.gain, 0.03, 0.005);
     this.gDepth = new Glide(depth.gain, 0.05, 2);
     this.gDepthBody = new Glide(depthBody.gain, 0.05, 2);
@@ -119,7 +123,9 @@ export class SloshVoice {
     this.gFloor.to(S.lo * 0.5, now, 0.1);
     this.gAir.to(S.air, now, 0.1);
     // a small tank rings higher than a wide one
-    this.gBody.to((320 - 140 * clamp((width - 250) / 1250, 0, 1)) * S.bodyPitch, now, 0.2);
+    const bodyHz = (320 - 140 * clamp((width - 250) / 1250, 0, 1)) * S.bodyPitch;
+    this.gBody.to(bodyHz, now, 0.2);
+    this.gBodyFloor.to(bodyHz * 0.5, now, 0.2);
     this.gBodyAmp.to(1.6 * S.body, now, 0.2);
     const g = S.gurgle * (0.35 + 0.65 * a);
     this.gDepth.to(g, now, 0.15);
@@ -164,7 +170,7 @@ export class PourVoice {
     const metal = ctx.createBiquadFilter();
     metal.type = 'peaking'; metal.frequency.value = 3100; metal.Q.value = 9; metal.gain.value = 0;
     const air = ctx.createBiquadFilter();
-    air.type = 'lowpass'; air.frequency.value = 7000; air.Q.value = 0.5;
+    air.type = 'lowpass'; air.frequency.value = 5500; air.Q.value = 0.5;
     const amp = ctx.createGain();
     amp.gain.value = 0;
     const pan = ctx.createStereoPanner();
@@ -291,7 +297,7 @@ export function playGlass(
   for (let i = 0; i < n; i++) {
     const f = base * RATIOS[i]! * (1 + (Math.random() - 0.5) * 0.002);
     if (f > limit) break;
-    const amp = level * AMPS[i]! * Math.pow(tilt, i === 1 ? 0.3 : i);
+    const amp = level * AMPS[i]! * Math.pow(tilt, i < 2 ? 0 : i - 1);
     const tau = (DECAYS[i]! * decay) / 4.6;
     const osc = ctx.createOscillator();
     osc.frequency.value = f;

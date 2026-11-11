@@ -39,7 +39,9 @@ export interface Liquid {
 
 export const WATER: Liquid = {
   gravityX: 0, gravityY: 3200,
-  soundSpeed2: 0.35, eosPower: 5,
+  // An exponent of 5 stiffens so fast under load that a deep column (about 600 px) goes unstable and
+  // boils into holes. 3 stays stable there and under a 13 000 px/s fling.
+  soundSpeed2: 0.5, eosPower: 3,
   viscosity: 0.08, cohesion: 0, wallFriction: 0,
   damping: 0.999, dyeMix: 0,
 };
@@ -62,32 +64,50 @@ export interface SimStats {
 type Pipes = Record<'clear' | 'carry' | 'recolor' | 'p2g' | 'p2gDye' | 'grid' | 'g2p', GPUComputePipeline>;
 const pipelineCache = new WeakMap<GPUDevice, { layout: GPUBindGroupLayout; pipes: Pipes }>();
 
-/** Compiles the solver's pipelines once per device. Call ahead of time so taking over leadership is quick. */
-export function simPipelines(device: GPUDevice): { layout: GPUBindGroupLayout; pipes: Pipes } {
-  const cached = pipelineCache.get(device);
-  if (cached) return cached;
+const SHADERS: Record<keyof Pipes, string> = {
+  clear: clearWGSL, carry: carryWGSL, recolor: recolorWGSL, p2g: p2gWGSL, p2gDye: p2gDyeWGSL, grid: gridWGSL, g2p: g2pWGSL,
+};
+
+function simLayout(device: GPUDevice): { layout: GPUBindGroupLayout; pipelineLayout: GPUPipelineLayout } {
   const entry = (binding: number, type: GPUBufferBindingType): GPUBindGroupLayoutEntry => ({
     binding, visibility: GPUShaderStage.COMPUTE, buffer: { type },
   });
   const layout = device.createBindGroupLayout({
     entries: [entry(0, 'uniform'), entry(1, 'storage'), entry(2, 'storage'), entry(3, 'storage'), entry(4, 'storage'), entry(5, 'storage')],
   });
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-  const pipe = (label: string, code: string) =>
-    device.createComputePipeline({
-      label, layout: pipelineLayout,
-      compute: { module: device.createShaderModule({ label, code }), entryPoint: 'main' },
-    });
-  const made = {
-    layout,
-    pipes: {
-      clear: pipe('clear', clearWGSL), carry: pipe('carry', carryWGSL), recolor: pipe('recolor', recolorWGSL),
-      p2g: pipe('p2g', p2gWGSL), p2gDye: pipe('p2gDye', p2gDyeWGSL),
-      grid: pipe('grid', gridWGSL), g2p: pipe('g2p', g2pWGSL),
-    },
-  };
+  return { layout, pipelineLayout: device.createPipelineLayout({ bindGroupLayouts: [layout] }) };
+}
+
+const describe = (device: GPUDevice, pipelineLayout: GPUPipelineLayout, label: string, code: string): GPUComputePipelineDescriptor => ({
+  label, layout: pipelineLayout,
+  compute: { module: device.createShaderModule({ label, code }), entryPoint: 'main' },
+});
+
+/** The solver's pipelines for this device, compiled on first use unless `warmSimPipelines` ran earlier. */
+export function simPipelines(device: GPUDevice): { layout: GPUBindGroupLayout; pipes: Pipes } {
+  const cached = pipelineCache.get(device);
+  if (cached) return cached;
+  const { layout, pipelineLayout } = simLayout(device);
+  const pipes = {} as Pipes;
+  for (const key of Object.keys(SHADERS) as (keyof Pipes)[]) pipes[key] = device.createComputePipeline(describe(device, pipelineLayout, key, SHADERS[key]));
+  const made = { layout, pipes };
   pipelineCache.set(device, made);
   return made;
+}
+
+/**
+ * Compiles the solver's pipelines in the background. Every window does this soon after it opens,
+ * so that taking over leadership never waits on a shader compile.
+ */
+export async function warmSimPipelines(device: GPUDevice): Promise<void> {
+  if (pipelineCache.has(device)) return;
+  const { layout, pipelineLayout } = simLayout(device);
+  const keys = Object.keys(SHADERS) as (keyof Pipes)[];
+  const built = await Promise.all(keys.map((key) => device.createComputePipelineAsync(describe(device, pipelineLayout, key, SHADERS[key]))));
+  if (pipelineCache.has(device)) return;
+  const pipes = {} as Pipes;
+  keys.forEach((key, i) => { pipes[key] = built[i]!; });
+  pipelineCache.set(device, { layout, pipes });
 }
 
 export class MpmSim {

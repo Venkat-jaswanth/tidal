@@ -1,0 +1,214 @@
+// Offline, frame-exact compositor. Reads a job written by a clip script (launch/raw/<name>/job.json),
+// renders every output frame in tools/capture/compose.html and encodes the PNG sequence with ffmpeg.
+// node tools/capture/compose.mjs <job.json> <out.mp4> [firstFrame] [lastFrame]
+//
+// For output frame k at film time T = t0 + k/fps, each recording shows the last frame whose content
+// was drawn at or before T: content time of a frame = startedAt + (pts - firstPts) - latency, where
+// latency is the measured delay from drawing to capture (tools/capture/experiment.mjs sync).
+import { chromium } from '@playwright/test';
+import { execFileSync, spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { dirname, resolve, relative } from 'node:path';
+import { BASE, ROOT } from './lib.mjs';
+
+/** Draw-to-capture delay, ms, measured with tools/capture/experiment.mjs (canvas.captureStream under load). */
+export const LATENCY_MS = { canvas: 8, tab: 27 };
+
+export function packetTimes(file) {
+  const out = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', file], { maxBuffer: 1 << 26 }).toString();
+  return out.split('\n').map((l) => l.trim()).filter((l) => l !== '').map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+}
+
+/**
+ * Pairs recorded frames with the animation frames they were requested in. A WebGPU canvas recording
+ * usually starts with one stale frame (captured when the recorder starts); after it, each frame
+ * answers one request in order, but the encoder may skip a request now and then, and the frames'
+ * own timestamps jitter (a late frame is often followed by an early one). So the pairing is a
+ * monotone alignment of the two timelines, solved by dynamic programming: each frame's timestamp,
+ * less a steady capture delay, should land on its request's time; skipping a request costs a little.
+ * Returns the content time of each recorded frame (its request's time), or NaN for a stale frame.
+ */
+export function matchRequested(pts, requested) {
+  const n = pts.length, m = requested.length;
+  if (!n || !m) return new Array(n).fill(NaN);
+  // the shift at the start, from the pattern of gaps in the first two seconds
+  const head = Math.min(n, 120);
+  let d = 0, bestCost = Infinity;
+  for (let s = -2; s <= 2; s++) {
+    let cost = 0;
+    for (let i = 0; i < head; i++) {
+      const j = i - s;
+      if (j < 0 || j >= m) { cost += 50; continue; }
+      if (i > 0 && j > 0) cost += Math.abs((pts[i] - pts[i - 1]) * 1000 - (requested[j] - requested[j - 1]));
+    }
+    if (cost < bestCost) { bestCost = cost; d = s; }
+  }
+  const i0 = Math.max(0, d);
+  // the steady delay between a request and its frame's timestamp
+  const es = [];
+  for (let i = i0; i < head; i++) if (i - d >= 0 && i - d < m) es.push(pts[i] * 1000 - (requested[i - d] - requested[Math.max(0, -d)]));
+  es.sort((a, b) => a - b);
+  const E = es[es.length >> 1] ?? 0;
+  const R0 = requested[Math.max(0, -d)];
+  const at = (i) => pts[i] * 1000 - E + R0; // where frame i's request should be
+  const nearest = (t) => { let lo = 0, hi = m - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (requested[mid] < t) lo = mid + 1; else hi = mid; } return lo; };
+  const B = 6, SKIP = 6, CAP = 60;
+  const cost = (i, j) => Math.min(CAP, Math.abs(at(i) - requested[j]));
+  const rows = [];
+  const band = (i) => { const c = nearest(at(i)); const js = []; for (let j = Math.max(0, c - B); j <= Math.min(m - 1, c + B); j++) js.push(j); return js; };
+  rows[i0] = band(i0).map((j) => ({ j, c: cost(i0, j), back: -1 }));
+  for (let i = i0 + 1; i < n; i++) {
+    const prev = rows[i - 1];
+    rows[i] = band(i).map((j) => {
+      let best = Infinity, back = -1;
+      for (let k = 0; k < prev.length; k++) {
+        const p = prev[k];
+        if (p.j >= j) continue;
+        const v = p.c + (j - p.j - 1) * SKIP;
+        if (v < best) { best = v; back = k; }
+      }
+      return { j, c: best + cost(i, j), back };
+    });
+  }
+  const out = new Array(n).fill(NaN);
+  let k = rows[n - 1].reduce((b, e, idx, a) => (e.c < a[b].c ? idx : b), 0);
+  for (let i = n - 1; i >= i0 && k >= 0; i--) {
+    const e = rows[i][k];
+    if (!Number.isFinite(e.c)) break;
+    out[i] = requested[e.j];
+    k = e.back;
+  }
+  return out;
+}
+
+/** Adds cues (a seek index) to a MediaRecorder WebM without re-encoding. */
+function remux(src, dst) {
+  if (existsSync(dst) && statSync(dst).mtimeMs > statSync(src).mtimeMs) return;
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', src, '-map', '0:v:0', '-c', 'copy', dst]);
+}
+
+export function buildJob(jobPath) {
+  const raw = JSON.parse(readFileSync(jobPath, 'utf8'));
+  const dir = dirname(resolve(jobPath));
+  const url = (p) => `/${relative(ROOT, p)}`;
+  const fps = raw.fps ?? 60;
+  const frames = Math.round(raw.duration * fps);
+  const area = raw.area;
+  const scale = Math.min(raw.width / area.w, raw.height / area.h);
+  const map = { sx: area.x, sy: area.y, scale, ox: Math.round((raw.width - area.w * scale) / 2), oy: Math.round((raw.height - area.h * scale) / 2) };
+  const windows = [];
+  for (const w of raw.windows) {
+    if (w.kind === 'image') {
+      windows.push({ ...w, src: url(`${dir}/${w.file}`), visibleFrom: w.visibleFrom ?? -Infinity, visibleUntil: w.visibleUntil ?? Infinity });
+      continue;
+    }
+    const meta = JSON.parse(readFileSync(`${dir}/${w.id}.json`, 'utf8'));
+    const src = `${dir}/${w.id}.webm`;
+    const seekable = `${dir}/${w.id}.cues.webm`;
+    remux(src, seekable);
+    const pts = packetTimes(seekable);
+    const latency = w.latency ?? LATENCY_MS[meta.kind] ?? 0;
+    const firstPts = pts[0];
+    // content time of every recorded frame: the animation frame it was requested in, or else its
+    // presentation time after the first frame's measured start
+    const content = meta.requested?.length ? matchRequested(pts, meta.requested) : pts.map((p) => meta.startedAt - latency + (p - firstPts) * 1000);
+    const valid = content.filter(Number.isFinite);
+    const contentStart = valid[0];
+    const lastContent = valid[valid.length - 1];
+    const logEnd = meta.log[meta.log.length - 1].t;
+    const visibleFrom = Math.max(contentStart, w.visibleFrom ?? -Infinity);
+    const visibleUntil = Math.min(w.visibleUntil ?? Infinity, logEnd, lastContent + 1000 / fps);
+    const chosen = new Array(frames).fill(-1);
+    let j = 0;
+    for (let k = 0; k < frames; k++) {
+      const T = raw.t0 + (k * 1000) / fps;
+      if (T < visibleFrom || T > visibleUntil) continue;
+      // the last frame drawn at or before T (frames that answer no request are skipped)
+      while (j + 1 < content.length && !(content[j + 1] > T + 1e-3)) j++;
+      let i = j;
+      while (i >= 0 && !Number.isFinite(content[i])) i--;
+      if (i >= 0 && content[i] <= T + 1e-3) chosen[k] = i;
+    }
+    const used = chosen.filter((p) => p >= 0);
+    // seek targets: the middle of each chosen frame's display interval, robust to timestamp rounding
+    const seekTo = chosen.map((i) => (i < 0 ? -1 : i + 1 < pts.length ? (pts[i] + pts[i + 1]) / 2 : pts[i] + 0.008));
+    const shownPts = chosen.map((i) => (i < 0 ? -1 : pts[i]));
+    const nextPts = chosen.map((i) => (i < 0 ? -1 : i + 1 < pts.length ? pts[i + 1] : pts[i] + 0.016));
+    const distinct = new Set(used).size;
+    windows.push({
+      id: w.id, kind: 'video', src: url(seekable), z: w.z ?? 0, titleBar: w.titleBar ?? null, dark: !!w.dark, fixedTitle: w.title ?? null, relabel: !!w.relabel,
+      log: meta.log, texts: w.labels === false ? null : (meta.texts?.length ? meta.texts : null), frames: shownPts, seekTo, nextPts,
+      visibleFrom, visibleUntil, dpr: meta.log[0]?.dpr ?? 1,
+      report: { method: meta.requested?.length ? `requested (${pts.length} frames / ${meta.requested.length} requests)` : `startedAt-${latency}ms`, frames: used.length, distinctSourceFrames: distinct, repeated: used.length - distinct, visibleFrom: Math.round(visibleFrom - raw.t0), visibleUntil: Math.round(visibleUntil - raw.t0) },
+    });
+  }
+  return { name: raw.name, width: raw.width, height: raw.height, fps, frames, t0: raw.t0, map, background: raw.background ?? 'stage', stageGrid: raw.stageGrid ?? { x: area.x, y: area.y }, windows, audio: raw.audio ?? null, dir };
+}
+
+export async function compose(jobPath, outFile, first = 0, last = Infinity) {
+  const job = buildJob(jobPath);
+  const end = Math.min(job.frames - 1, last);
+  for (const w of job.windows) if (w.report) console.log(`  ${w.id}: ${JSON.stringify(w.report)}`);
+  const browser = await chromium.launch({ channel: 'chrome', headless: false, args: ['--window-size=1000,640', '--autoplay-policy=no-user-gesture-required'] });
+  try {
+    const page = await (await browser.newContext({ viewport: null })).newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await page.goto(`${BASE}/tools/capture/compose.html`);
+    const { dir: _dir, audio: _audio, ...pageJob } = job;
+    const init = await page.evaluate((j) => window.compose.init(j), pageJob);
+    if (!init.fonts) throw new Error('fonts did not load');
+
+    if (outFile.endsWith('.png')) {
+      writeFileSync(outFile, Buffer.from(await page.evaluate((i) => window.compose.frame(i), first), 'base64'));
+      return { job };
+    }
+    const args = ['-y', '-v', 'error', '-f', 'image2pipe', '-framerate', String(job.fps), '-c:v', 'png', '-i', '-'];
+    const audio = job.audio;
+    if (audio) {
+      const offset = (job.t0 + (first * 1000) / job.fps - audio.startedAt) / 1000;
+      if (offset >= 0) args.push('-ss', offset.toFixed(4), '-i', `${job.dir}/${audio.file}`);
+      else args.push('-itsoffset', (-offset).toFixed(4), '-i', `${job.dir}/${audio.file}`);
+      args.push('-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-b:a', '192k', '-af', 'apad');
+    }
+    args.push(
+      '-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p',
+      '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p',
+      '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
+      '-r', String(job.fps), '-t', ((end - first + 1) / job.fps).toFixed(4), '-movflags', '+faststart', outFile,
+    );
+    const ff = spawn('ffmpeg', args, { stdio: ['pipe', 'inherit', 'inherit'] });
+    const done = new Promise((res, rej) => ff.on('close', (c) => (c === 0 ? res() : rej(new Error(`ffmpeg exit ${c}`)))));
+    const t = Date.now();
+    for (let k = first; k <= end; k++) {
+      const png = Buffer.from(await page.evaluate((i) => window.compose.frame(i), k), 'base64');
+      if (!ff.stdin.write(png)) await new Promise((r) => ff.stdin.once('drain', r));
+      if ((k - first) % 120 === 0) console.log(`  frame ${k}/${end} (${((Date.now() - t) / 1000).toFixed(0)} s)`);
+    }
+    ff.stdin.end();
+    await done;
+    const stats = await page.evaluate(() => window.compose.stats());
+    console.log(`  composed ${end - first + 1} frames in ${((Date.now() - t) / 1000).toFixed(0)} s; seek mismatches ${JSON.stringify(stats)}`);
+    if (errors.length) console.log('  page errors:', errors.slice(0, 5).join(' | '));
+    return { job, stats };
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Composes one still of a single window at clock time T (a moment a real screenshot of the page was
+ * taken), cropped to that window, to compare the redrawn labels with the page itself.
+ */
+export async function still(jobPath, id, T, outPng) {
+  const raw = JSON.parse(readFileSync(jobPath, 'utf8'));
+  const tmp = jobPath.replace(/\.json$/, `.still-${id}.json`);
+  writeFileSync(tmp, JSON.stringify({ ...raw, t0: T, duration: 1 / (raw.fps ?? 60), windows: raw.windows.filter((w) => w.id === id).map((w) => ({ ...w, visibleFrom: undefined })), audio: undefined }));
+  await compose(tmp, outPng);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const [jobPath, outFile, a, b] = process.argv.slice(2);
+  await compose(jobPath, outFile, a ? Number(a) : 0, b ? Number(b) : Infinity);
+}

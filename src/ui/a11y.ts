@@ -45,7 +45,7 @@ export function mountA11y(doc: Document, engine: Engine): () => void {
   live.setAttribute('aria-live', 'polite');
   live.setAttribute('aria-atomic', 'true');
   live.style.cssText = VISUALLY_HIDDEN;
-  doc.body.append(live);
+  (doc.getElementById('vessel') ?? doc.body).append(live);
 
   const describe = (e: Engine): string => {
     const base = `Vessel ${e.slot + 1}, a tank of ${e.liquid.id} on graph paper`;

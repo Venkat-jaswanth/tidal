@@ -30,7 +30,8 @@ function at(keys: readonly Key[], t: number): { x: number; y: number } {
 
 /** Outer window sizes for each role on a stage of this size. */
 export function sizes(stage: Rect): { big: { w: number; h: number }; small: { w: number; h: number } } {
-  const k = Math.min(1, stage.w / 1400, stage.h / 900);
+  // grow with the stage, so a performance fills a large display instead of huddling at its foot
+  const k = Math.min(1.32, stage.w / 1400, stage.h / 800);
   return {
     big: { w: Math.round(560 * k), h: Math.round(520 * k) },
     small: { w: Math.round(330 * k), h: Math.round(330 * k) },
@@ -95,5 +96,44 @@ export function poseAt(role: number, count: number, t: number, stage: Rect): Pos
     ];
   }
   const p = at(keys, t);
+  return { x: Math.round(p.x), y: Math.round(p.y), ...small };
+}
+
+/** The launch film: one vessel, a second opens beside it and takes water, is flung away, then pours back from above. */
+export const HERO_SECONDS = 14.5;
+
+/**
+ * Film choreography for two vessels. Role 0 is the first, large vessel; role 1 opens beside it at
+ * `HERO_SECOND_OPENS` seconds and should be created at the pose this returns for that time.
+ */
+export const HERO_SECOND_OPENS = 2;
+
+export function heroPoseAt(role: number, t: number, stage: Rect): Pose | null {
+  if (role < 0 || role > 1) return null;
+  const { big, small } = sizes(stage);
+  const floorBig = stage.y + stage.h - big.h;
+  const floorSmall = stage.y + stage.h - small.h;
+  const ax = stage.x + Math.round((stage.w - big.w - small.w) / 2) - 60;
+  const touch = ax + big.w;
+  const flung = Math.min(stage.x + stage.w - small.w, touch + 420);
+  const pourY = floorBig + TITLE_BAR - small.h;
+  const pourX = ax + big.w - POUR_OVERLAP;
+  const fling = Math.min(150, Math.max(40, ax - stage.x - 20));
+  if (role === 0) {
+    const p = at([
+      { t: 0, x: ax, y: floorBig }, { t: 11.2, x: ax, y: floorBig },
+      { t: 11.55, x: ax - fling, y: floorBig }, { t: 12.1, x: ax - fling, y: floorBig },
+      { t: 12.5, x: ax, y: floorBig },
+    ], t);
+    return { x: Math.round(p.x), y: Math.round(p.y), ...big };
+  }
+  const p = at([
+    { t: 0, x: touch, y: floorSmall }, { t: 4.1, x: touch, y: floorSmall },      // beside the first: water pours across
+    { t: 4.55, x: flung, y: floorSmall }, { t: 6.6, x: flung, y: floorSmall },    // flung away: the wave hits its far wall
+    { t: 7.4, x: flung, y: pourY }, { t: 8.2, x: pourX, y: pourY },               // lifted over the first vessel
+    { t: 10.9, x: pourX, y: pourY },                                              // tipped in
+    { t: 11.2, x: flung, y: pourY }, { t: 12.4, x: flung, y: floorSmall },
+    { t: 13.3, x: touch, y: floorSmall },                                         // back beside it
+  ], t);
   return { x: Math.round(p.x), y: Math.round(p.y), ...small };
 }

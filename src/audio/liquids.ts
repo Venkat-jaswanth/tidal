@@ -77,7 +77,7 @@ const WATER: LiquidTone = {
   slosh: { level: 1, lo: 300, hi: 1400, qLo: 1.4, qHi: 0.8, body: 1, bodyPitch: 1, gurgle: 520, gurgleRate: 1, bubbles: 7, air: 3200 },
   drop: { level: 1, pitch: 1, decay: 1, click: 0.22, threshold: 0.0005 },
   glass: { level: 1, decay: 1, bright: 0.55, partials: 6, threshold: 0.005 },
-  pour: { level: 1, hp: 900, bandA: 1850, bandB: 3350, q: 2.2, jitter: 1, metal: 0, air: 7000, bubbles: 6 },
+  pour: { level: 1, hp: 900, bandA: 1850, bandB: 3350, q: 2.2, jitter: 1, metal: 0, air: 5500, bubbles: 6 },
 };
 
 // Dense and cohesive: a heavier, narrower, more metallic slosh, tight bright beads, and a hard strike on the glass.
@@ -85,7 +85,7 @@ const MERCURY: LiquidTone = {
   slosh: { level: 0.75, lo: 380, hi: 1700, qLo: 2.4, qHi: 1.5, body: 0.55, bodyPitch: 1.15, gurgle: 300, gurgleRate: 1.4, bubbles: 0, air: 4200 },
   drop: { level: 0.7, pitch: 1.6, decay: 0.5, click: 0.6, threshold: 0.0004 },
   glass: { level: 1.5, decay: 1.25, bright: 0.85, partials: 7, threshold: 0.0035 },
-  pour: { level: 0.8, hp: 1100, bandA: 2300, bandB: 3800, q: 3.5, jitter: 0.7, metal: 11, air: 8000, bubbles: 0 },
+  pour: { level: 0.8, hp: 1100, bandA: 2300, bandB: 3800, q: 3.5, jitter: 0.7, metal: 11, air: 7000, bubbles: 0 },
 };
 
 // Slow and viscous: low, dark and quiet, rare heavy blobs, and the glass is damped almost at once.
